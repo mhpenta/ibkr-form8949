@@ -1,0 +1,44 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+ibkrForm8949
+ibkr-form8949
+ibkr-activity
+ibkranalyzer
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# CSV files (potentially containing sensitive financial data)
+*.csv
+!internal/activity/testdata/activity_layouts_anonymized.csv
+
+# Dependency directories (if using local vendor)
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE directories
+.DS_Store
+.idea/
+.vscode/
+csv/
+analysis_reports/
+analysis/
+CLAUDE.md
+docs/
+
+# Custom documentation (not for repository)
+docs/wasm_conversion_report.md
+docs/wasm_implementation_guide.md
+docs/proof_of_concept.md
+docs/open_source_critical_review.md
+
+prompts.md
