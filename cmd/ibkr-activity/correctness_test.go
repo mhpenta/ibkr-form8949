@@ -26,7 +26,7 @@ func writeActivity(t *testing.T, text string) string {
 func TestAllAndPositionShareTradeParser(t *testing.T) {
 	data := commandHeader + commandBuy + commandSale + strings.Replace(commandSale, ",Order,", ",ClosedLot,", 1)
 	path := writeActivity(t, data)
-	all, err := captureStdout(func() error { return AnalyzeAllSecurities(path) })
+	all, err := captureStdout(func() error { return AnalyzeAllSecurities(path, "") })
 	if err != nil {
 		t.Fatal(err)
 	}

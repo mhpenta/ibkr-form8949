@@ -47,8 +47,35 @@ type MarkToMarketAssetSummary struct {
 	TotalPL       float64
 }
 
-// AnalyzeAllSecurities analyzes all securities in the IBKR activity report
-func AnalyzeAllSecurities(csvFilePath string) error {
+// tradeRowTotals summarizes trade-row performance across securities.
+type tradeRowTotals struct {
+	Securities int
+	RealizedPL float64
+	Trades     int
+	Commission float64
+	Winners    int
+	Losers     int
+}
+
+func summarizeTradeRows(performances []TradeRowSecurityPerformance) tradeRowTotals {
+	totals := tradeRowTotals{Securities: len(performances)}
+	for _, perf := range performances {
+		totals.RealizedPL += perf.TradeRowRealizedPL
+		totals.Trades += perf.TotalTrades
+		totals.Commission += perf.TradeRowCommission
+		if perf.TradeRowRealizedPL > 0 {
+			totals.Winners++
+		} else if perf.TradeRowRealizedPL < 0 {
+			totals.Losers++
+		}
+	}
+	return totals
+}
+
+// AnalyzeAllSecurities analyzes all securities in the IBKR activity report. When
+// xlsxPath is set, it also writes every security, not just the top and bottom 20,
+// to a spreadsheet at that path.
+func AnalyzeAllSecurities(csvFilePath, xlsxPath string) error {
 	report, err := activity.ParseActivityReport(csvFilePath)
 	if err != nil {
 		return err
@@ -56,6 +83,12 @@ func AnalyzeAllSecurities(csvFilePath string) error {
 	records := [][]string{{"Statement", "Data", "Period", report.Period}}
 	if len(report.MarkToMarketPerformance) > 0 {
 		printMarkToMarketPerformanceReport(records, report)
+		if xlsxPath != "" {
+			if err := writeMarkToMarketWorkbook(xlsxPath, markToMarketReportTitle(records), report); err != nil {
+				return fmt.Errorf("write spreadsheet: %w", err)
+			}
+			fmt.Printf("\nSpreadsheet written to %s\n", xlsxPath)
+		}
 		return nil
 	}
 
@@ -117,6 +150,12 @@ func AnalyzeAllSecurities(csvFilePath string) error {
 		return performances[i].TradeRowRealizedPL > performances[j].TradeRowRealizedPL
 	})
 
+	if xlsxPath != "" {
+		if err := writeTradeRowWorkbook(xlsxPath, securityReportTitle(records), report.Period, performances, reportCurrencies); err != nil {
+			return fmt.Errorf("write spreadsheet: %w", err)
+		}
+	}
+
 	// Print results
 	fmt.Printf("\n=== %s ===\n\n", securityReportTitle(records))
 	printTradeRowScope(reportCurrencies)
@@ -153,39 +192,18 @@ func AnalyzeAllSecurities(csvFilePath string) error {
 			perf.NetPeriodQuantity)
 	}
 
-	// Calculate totals
-	var totalPL float64
-	var totalTrades int
-	var totalWinners int
-	var totalLosers int
-	var totalCommission float64
-	var profitableVolume float64
-	var lossVolume float64
-
-	for _, perf := range performances {
-		totalPL += perf.TradeRowRealizedPL
-		totalTrades += perf.TotalTrades
-		totalCommission += perf.TradeRowCommission
-
-		if perf.TradeRowRealizedPL > 0 {
-			totalWinners++
-			profitableVolume += perf.ShareVolume
-		} else if perf.TradeRowRealizedPL < 0 {
-			totalLosers++
-			lossVolume += perf.ShareVolume
-		}
-	}
+	totals := summarizeTradeRows(performances)
 
 	fmt.Printf("\nSUMMARY STATISTICS:\n")
-	fmt.Printf("Total Securities Traded: %d\n", len(performances))
-	fmt.Printf("Total Trade-Row Realized P/L: %.2f%s\n", totalPL, mixedCurrencySuffix(reportCurrencies))
-	fmt.Printf("Total Trades: %d\n", totalTrades)
-	fmt.Printf("Total Trade-Row Commission: %.2f%s\n", totalCommission, mixedCurrencySuffix(reportCurrencies))
+	fmt.Printf("Total Securities Traded: %d\n", totals.Securities)
+	fmt.Printf("Total Trade-Row Realized P/L: %.2f%s\n", totals.RealizedPL, mixedCurrencySuffix(reportCurrencies))
+	fmt.Printf("Total Trades: %d\n", totals.Trades)
+	fmt.Printf("Total Trade-Row Commission: %.2f%s\n", totals.Commission, mixedCurrencySuffix(reportCurrencies))
 	fmt.Println("Reported realized P/L already includes commissions and wash-sale adjustments; commissions are shown separately for reference.")
 	fmt.Printf("Profitable Securities: %d (%.1f%%)\n",
-		totalWinners, percent(totalWinners, len(performances)))
+		totals.Winners, percent(totals.Winners, totals.Securities))
 	fmt.Printf("Losing Securities: %d (%.1f%%)\n",
-		totalLosers, percent(totalLosers, len(performances)))
+		totals.Losers, percent(totals.Losers, totals.Securities))
 
 	fmt.Printf("\nTOP 5 MOST ACTIVE SECURITIES:\n")
 	fmt.Printf("Symbol | Volume | # Trades | Trade-Row Realized P/L | Currency\n")
@@ -215,17 +233,26 @@ func AnalyzeAllSecurities(csvFilePath string) error {
 	fmt.Println("• Use --wash-sale-periods to view active wash sale periods")
 	fmt.Println("• Use --safe-repurchase to inspect dates outside the supplied loss-sale windows")
 
+	if xlsxPath != "" {
+		fmt.Printf("\nSpreadsheet written to %s\n", xlsxPath)
+	}
 	return nil
 }
 
-func printMarkToMarketPerformanceReport(records [][]string, report *activity.ActivityReport) {
-	performances := aggregateMarkToMarketPerformance(report.MarkToMarketPerformance)
+// sortedMarkToMarketPerformance aggregates detail rows by security, best total P/L first.
+func sortedMarkToMarketPerformance(rows []activity.MarkToMarketPerformance) []MarkToMarketSecurityPerformance {
+	performances := aggregateMarkToMarketPerformance(rows)
 	sort.Slice(performances, func(i, j int) bool {
 		if performances[i].TotalPL == performances[j].TotalPL {
 			return performances[i].Symbol+performances[i].AssetCategory < performances[j].Symbol+performances[j].AssetCategory
 		}
 		return performances[i].TotalPL > performances[j].TotalPL
 	})
+	return performances
+}
+
+func printMarkToMarketPerformanceReport(records [][]string, report *activity.ActivityReport) {
+	performances := sortedMarkToMarketPerformance(report.MarkToMarketPerformance)
 
 	baseCurrency := normalizeCurrency(report.BaseCurrency)
 

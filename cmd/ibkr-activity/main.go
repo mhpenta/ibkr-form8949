@@ -18,6 +18,7 @@ func main() {
 	symbol := flag.String("symbol", "", "Focus analysis on a specific symbol")
 	analyzePosition := flag.Bool("analyze-position", false, "Summarize trades and statement holdings for the specified stock symbol")
 	analyzeAll := flag.Bool("analyze-all", false, "Run analysis on all securities traded")
+	xlsxPath := flag.String("xlsx", "", "Also write the --analyze-all results to this .xlsx spreadsheet (opens in Google Sheets and Excel)")
 	analyzeTransaction := flag.Bool("analyze-transaction", false, "Analyze specific transactions for a symbol")
 	transactionDate := flag.String("date", "", "Date to analyze in YYYY-MM-DD format (required with analyze-transaction)")
 	transactionQuantity := flag.Float64("quantity", 0, "Approximate quantity to look for (optional with analyze-transaction)")
@@ -42,6 +43,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *xlsxPath != "" {
+		if !*analyzeAll {
+			slog.Error("--xlsx is used with --analyze-all")
+			os.Exit(1)
+		}
+		if err := validSpreadsheetPath(*xlsxPath); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+	}
+
 	// Handle the wash sale periods analysis
 	if *analyzeWashSalePeriods {
 		err := AnalyzeWashSalePeriods(*activityFile)
@@ -64,7 +76,7 @@ func main() {
 
 	// Handle the all securities analysis
 	if *analyzeAll {
-		err := AnalyzeAllSecurities(*activityFile)
+		err := AnalyzeAllSecurities(*activityFile, *xlsxPath)
 		if err != nil {
 			slog.Error("Failed to analyze all securities", "error", err)
 			os.Exit(1)

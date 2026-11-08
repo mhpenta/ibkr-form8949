@@ -43,6 +43,7 @@ Recognized `Part,I` / `Part,II` and `Box,A` through `Box,F` records supply the h
 | `--symbol` | Focus analysis on a specific symbol | None | `--symbol AAPL` |
 | `--analyze-position` | Summarize trades and statement holdings for a stock symbol | `false` | `--analyze-position` |
 | `--analyze-all` | Run analysis on all securities traded | `false` | `--analyze-all` |
+| `--xlsx` | Also write the `--analyze-all` results to an `.xlsx` workbook | None | `--xlsx 2024.xlsx` |
 | `--analyze-transaction` | Analyze specific transactions for a symbol | `false` | `--analyze-transaction` |
 | `--wash-sale-periods` | Analyze active wash sale periods | `false` | `--wash-sale-periods` |
 | `--safe-repurchase` | Show first dates outside the supplied loss-sale windows | `false` | `--safe-repurchase` |
@@ -55,6 +56,8 @@ Recognized `Part,I` / `Part,II` and `Box,A` through `Box,F` records supply the h
 All activity commands use the same parser. Each `Trades,Header` controls the rows following it, including Forex layouts and an optional Account column. `Order` and execution-level `Trade` records are supported; `ClosedLot`, `Lot` and total rows are excluded from transaction counts. When both orders and executions are supplied for an account/security/currency, their daily quantities and monetary totals must agree; matching executions are then excluded to prevent double counting. Unknown detail levels and malformed transaction values stop processing. A missing Code column produces a warning that broker wash-sale flags are unavailable.
 
 Symbols are case-insensitive in every command. Date-only trades are accepted, but ambiguous same-day ordering requires lot details for replacement matching. Position holdings come from the broker's ending quantity snapshot; net period purchases minus sales alone do not establish current holdings.
+
+`--xlsx` requires `--analyze-all` and a path ending in `.xlsx`; an existing file at that path is replaced. The workbook lists every security rather than the top and bottom 20, with amounts stored as numbers so they sort, filter and sum. Trade-row statements produce **Securities** and **Summary** sheets; statements with a Mark-to-Market Performance Summary produce **Securities**, **By Asset Category** and **Summary** (including Change in NAV). The account number is not written to the file.
 
 `--analyze-position` can show holdings from the Mark-to-Market Performance Summary for a stock with no trades in the period. Missing ending quantities are reported as unknown, and offsetting open holdings are shown with their net quantity. Ambiguous same-day buys appear separately from confirmed post-sale transactions. Short-cover losses are reported separately from long-sale windows because short-sale wash-sale timing requires delivery and lot details.
 

@@ -43,10 +43,16 @@ loss-sale windows still open.
 
 ```bash
 ibkr-activity --file activity.2024.csv --analyze-all                     # performance by security
+ibkr-activity --file activity.2024.csv --analyze-all --xlsx 2024.xlsx    # ...and every security in a spreadsheet
 ibkr-activity --file activity.2024.csv --symbol AAPL --analyze-position  # one security in detail
 ibkr-activity --file activity.2024.csv --wash-sale-periods               # open loss-sale windows
 ibkr-activity --file activity.2024.csv --safe-repurchase                 # first dates outside them
 ```
+
+`--xlsx` writes a workbook with a sortable, filterable sheet of every security (the terminal
+shows only the top and bottom 20) plus a summary sheet. To open it in Google Sheets, drag the
+file into Google Drive, or use File → Import → Upload in a sheet. It also opens in Excel and
+Numbers.
 
 All flags and the detailed matching rules are in [REFERENCE.md](REFERENCE.md).
 
@@ -69,6 +75,7 @@ internal/form8949/      Form 8949 parsing and wash-sale analysis
 internal/report/        Form 8949 reports
 internal/activity/      activity statement parsing and analysis
 internal/washsale/      window and security-matching rules shared by both
+internal/xlsx/          dependency-free .xlsx writer for spreadsheet output
 ```
 
 `make test` runs the test suite. The only statement-shaped fixture,
