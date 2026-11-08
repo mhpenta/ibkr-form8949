@@ -1,17 +1,15 @@
-package internal
+package form8949
 
 import (
 	"fmt"
+	"github.com/mhpenta/ibkr-form8949/internal/washsale"
 	"math"
 	"sort"
-
-	"github.com/mhpenta/ibkr-form8949/internal/types"
-	"github.com/mhpenta/ibkr-form8949/internal/washsale"
 )
 
 // AnalyzeTransactions processes all transactions and identifies suspicious wash sales
-func AnalyzeTransactions(transactions []types.Transaction, year int, extendedWindow int, maxWindow int) types.TaxAnalysis {
-	analysis := types.TaxAnalysis{
+func AnalyzeTransactions(transactions []Transaction, year int, extendedWindow int, maxWindow int) TaxAnalysis {
+	analysis := TaxAnalysis{
 		ExtendedWindow: extendedWindow,
 		MaxWindow:      maxWindow,
 	}
@@ -23,11 +21,11 @@ func AnalyzeTransactions(transactions []types.Transaction, year int, extendedWin
 
 	// Keep position totals scoped to the reporting year and purchase evidence
 	// across every supplied year. Descriptions retain their original display text.
-	securitiesMap := make(map[string][]types.Transaction)
-	washSecurities := make(map[string][]types.Transaction)
+	securitiesMap := make(map[string][]Transaction)
+	washSecurities := make(map[string][]Transaction)
 
 	// Maps to track position-level analysis
-	positionTotals := make(map[string]types.PositionSummary)
+	positionTotals := make(map[string]PositionSummary)
 
 	// First pass: aggregate totals and group by security
 	for _, tx := range transactions {
@@ -241,7 +239,7 @@ func formatDays(days int) string {
 }
 
 // sortPositionsByGainLoss sorts positions by gain/loss (most profitable first)
-func sortPositionsByGainLoss(positions []types.PositionSummary) {
+func sortPositionsByGainLoss(positions []PositionSummary) {
 	sort.Slice(positions, func(i, j int) bool {
 		if positions[i].TotalGainOrLoss == positions[j].TotalGainOrLoss {
 			return positions[i].SecurityName < positions[j].SecurityName

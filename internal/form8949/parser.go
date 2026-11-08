@@ -1,4 +1,4 @@
-package internal
+package form8949
 
 import (
 	"encoding/csv"
@@ -9,11 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/mhpenta/ibkr-form8949/internal/types"
 )
 
-func ParseCSVFile(filePath string) ([]types.Transaction, int, error) {
+func ParseCSVFile(filePath string) ([]Transaction, int, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open worksheet: %w", err)
@@ -24,10 +22,10 @@ func ParseCSVFile(filePath string) ([]types.Transaction, int, error) {
 
 // ParseCSVReader rejects malformed transactions instead of returning partial totals.
 // Part/Box values apply until the next section; headers can repeat or reorder fields.
-func ParseCSVReader(input io.Reader) ([]types.Transaction, int, error) {
+func ParseCSVReader(input io.Reader) ([]Transaction, int, error) {
 	reader := csv.NewReader(input)
 	reader.FieldsPerRecord = -1
-	var transactions []types.Transaction
+	var transactions []Transaction
 	var header map[string]int
 	year, part, boxTerm := 0, 0, 0
 	box := ""
@@ -44,7 +42,7 @@ func ParseCSVReader(input io.Reader) ([]types.Transaction, int, error) {
 			row[i] = strings.TrimSpace(row[i])
 		}
 		row[0] = strings.TrimPrefix(row[0], "\ufeff")
-		fail := func(err error) ([]types.Transaction, int, error) {
+		fail := func(err error) ([]Transaction, int, error) {
 			return nil, year, fmt.Errorf("line %d: %w", line, err)
 		}
 		switch row[0] {
@@ -160,15 +158,15 @@ func afterAnniversary(acquired, sold time.Time) bool {
 	return time.Date(sold.Year(), sold.Month(), sold.Day(), 0, 0, 0, 0, time.UTC).After(anniversary)
 }
 
-func parseTransaction(row []string) (types.Transaction, error) {
+func parseTransaction(row []string) (Transaction, error) {
 	if len(row) < 9 {
-		return types.Transaction{}, fmt.Errorf("expected at least 9 fields, got %d", len(row))
+		return Transaction{}, fmt.Errorf("expected at least 9 fields, got %d", len(row))
 	}
 	for i := range row {
 		row[i] = strings.TrimSpace(row[i])
 	}
 	if row[1] == "" {
-		return types.Transaction{}, fmt.Errorf("missing description")
+		return Transaction{}, fmt.Errorf("missing description")
 	}
 
 	hasVariousLot := strings.EqualFold(row[2], "VARIOUS")
@@ -176,39 +174,39 @@ func parseTransaction(row []string) (types.Transaction, error) {
 	// Parse dates
 	dateAcquired, err := parseDate(row[2])
 	if err != nil {
-		return types.Transaction{}, fmt.Errorf("invalid acquisition date: %w", err)
+		return Transaction{}, fmt.Errorf("invalid acquisition date: %w", err)
 	}
 
 	dateSold, err := parseDate(row[3])
 	if err != nil {
-		return types.Transaction{}, fmt.Errorf("invalid sale date: %w", err)
+		return Transaction{}, fmt.Errorf("invalid sale date: %w", err)
 	}
 	if dateSold.IsZero() {
-		return types.Transaction{}, fmt.Errorf("sale date cannot be VARIOUS")
+		return Transaction{}, fmt.Errorf("sale date cannot be VARIOUS")
 	}
 
 	// Parse numeric values
 	proceeds, err := parseAmount(row[4])
 	if err != nil {
-		return types.Transaction{}, fmt.Errorf("invalid proceeds: %w", err)
+		return Transaction{}, fmt.Errorf("invalid proceeds: %w", err)
 	}
 
 	costBasis, err := parseAmount(row[5])
 	if err != nil {
-		return types.Transaction{}, fmt.Errorf("invalid cost basis: %w", err)
+		return Transaction{}, fmt.Errorf("invalid cost basis: %w", err)
 	}
 
 	var adjustment float64
 	if row[7] != "" {
 		adjustment, err = parseAmount(row[7])
 		if err != nil {
-			return types.Transaction{}, fmt.Errorf("invalid adjustment: %w", err)
+			return Transaction{}, fmt.Errorf("invalid adjustment: %w", err)
 		}
 	}
 
 	gainOrLoss, err := parseAmount(row[8])
 	if err != nil {
-		return types.Transaction{}, fmt.Errorf("invalid gain/loss: %w", err)
+		return Transaction{}, fmt.Errorf("invalid gain/loss: %w", err)
 	}
 
 	// Check if this is a wash sale
@@ -219,7 +217,7 @@ func parseTransaction(row []string) (types.Transaction, error) {
 	// Determine which calendar quarter the sale occurred in
 	quarter := (dateSold.Month()-1)/3 + 1
 
-	return types.Transaction{
+	return Transaction{
 		Description:   row[1],
 		DateAcquired:  dateAcquired,
 		DateSold:      dateSold,

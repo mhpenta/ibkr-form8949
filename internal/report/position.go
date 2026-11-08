@@ -3,11 +3,11 @@ package report
 import (
 	"fmt"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintPositionAnalysis prints a detailed position-by-position analysis
-func PrintPositionAnalysis(analysis types.TaxAnalysis) {
+func PrintPositionAnalysis(analysis form8949.TaxAnalysis) {
 	fmt.Println("\n=== POSITION PERFORMANCE ANALYSIS ===")
 	fmt.Println("This report analyzes each position's performance sorted by profit/loss")
 

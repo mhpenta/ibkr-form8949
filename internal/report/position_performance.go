@@ -5,16 +5,16 @@ import (
 	"math"
 	"sort"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintPositionPerformanceReport prints a consolidated position performance analysis report
-func PrintPositionPerformanceReport(analysis types.TaxAnalysis) {
+func PrintPositionPerformanceReport(analysis form8949.TaxAnalysis) {
 	fmt.Println("\n=== CONSOLIDATED POSITION PERFORMANCE REPORT ===")
 	fmt.Println("This report shows overall trading performance by security, ignoring lot sizes")
 
 	// Create a map to consolidate positions by security name (without lot size)
-	securityMap := make(map[string]*types.PositionSummary)
+	securityMap := make(map[string]*form8949.PositionSummary)
 
 	// First pass: group positions by base security name
 	for _, pos := range analysis.PositionAnalysis {
@@ -22,7 +22,7 @@ func PrintPositionPerformanceReport(analysis types.TaxAnalysis) {
 
 		// If this security hasn't been seen before, initialize it
 		if _, exists := securityMap[baseName]; !exists {
-			securityMap[baseName] = &types.PositionSummary{
+			securityMap[baseName] = &form8949.PositionSummary{
 				SecurityName: baseName,
 			}
 		}
@@ -44,7 +44,7 @@ func PrintPositionPerformanceReport(analysis types.TaxAnalysis) {
 	}
 
 	// Convert map to slice for sorting and calculate derived metrics
-	var consolidatedPositions []types.PositionSummary
+	var consolidatedPositions []form8949.PositionSummary
 
 	totalGrossProfit := 0.0
 	totalGrossLoss := 0.0

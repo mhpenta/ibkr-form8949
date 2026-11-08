@@ -4,11 +4,11 @@ package report
 import (
 	"fmt"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintAll prints all available reports
-func PrintAll(analysis types.TaxAnalysis) {
+func PrintAll(analysis form8949.TaxAnalysis) {
 	PrintStandardAnalysis(analysis)
 	fmt.Println()
 	PrintQuarterlyAnalysis(analysis)
@@ -21,7 +21,7 @@ func PrintAll(analysis types.TaxAnalysis) {
 }
 
 // HandleReportType executes the appropriate report based on the specified type
-func HandleReportType(reportType string, analysis types.TaxAnalysis) {
+func HandleReportType(reportType string, analysis form8949.TaxAnalysis) {
 	switch reportType {
 	case "standard":
 		PrintStandardAnalysis(analysis)
@@ -42,7 +42,7 @@ func HandleReportType(reportType string, analysis types.TaxAnalysis) {
 }
 
 // HandleFocusReport executes the appropriate focus report
-func HandleFocusReport(focusType string, analysis types.TaxAnalysis) bool {
+func HandleFocusReport(focusType string, analysis form8949.TaxAnalysis) bool {
 	switch focusType {
 	case "no-repurchase":
 		PrintNoRepurchaseReport(analysis)

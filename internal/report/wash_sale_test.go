@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 func TestFullyDisallowedLossReport(t *testing.T) {
-	analysis := types.TaxAnalysis{SuspiciousWashSales: []types.Transaction{{
+	analysis := form8949.TaxAnalysis{SuspiciousWashSales: []form8949.Transaction{{
 		Description: "100 sh XYZ", Proceeds: 900, CostBasis: 1000,
 		Adjustment: 100, GainOrLoss: 0, IsWashSale: true,
 		SuspiciousReason: "No matching purchase within reasonable timeframe",

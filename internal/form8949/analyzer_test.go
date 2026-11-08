@@ -1,7 +1,6 @@
-package internal
+package form8949
 
 import (
-	"github.com/mhpenta/ibkr-form8949/internal/types"
 	"strings"
 	"testing"
 	"time"
@@ -15,13 +14,13 @@ func TestWashSaleDetection(t *testing.T) {
 
 	testCases := []struct {
 		name               string
-		transactions       []types.Transaction
+		transactions       []Transaction
 		expectedSuspicious int
 		description        string
 	}{
 		{
 			name: "Basic wash sale with repurchase within 30 days",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 900, 1000, true, 100),
 				createTestTransaction("TEST SECURITY", "2024-02-15", "2024-03-01", 1100, 1000, false, 0),
 			},
@@ -30,7 +29,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Wash sale with repurchase just outside 30 days",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 900, 1000, true, 100),
 				createTestTransaction("TEST SECURITY", "2024-03-05", "2024-04-01", 1100, 1000, false, 0),
 			},
@@ -39,7 +38,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Wash sale with no repurchase",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 900, 1000, true, 100),
 				// No repurchase transaction
 			},
@@ -48,7 +47,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Zero loss wash sale",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 1000, 1000, true, 100),
 			},
 			expectedSuspicious: 1,
@@ -56,7 +55,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Multiple wash sales with one repurchase",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 900, 1000, true, 100),
 				createTestTransaction("TEST SECURITY", "2024-01-05", "2024-02-05", 850, 1000, true, 150),
 				createTestTransaction("TEST SECURITY", "2024-02-15", "2024-03-01", 1100, 1000, false, 0),
@@ -66,7 +65,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Different securities should not trigger wash sales",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("TEST SECURITY A", "2024-01-01", "2024-02-01", 900, 1000, true, 100),
 				createTestTransaction("TEST SECURITY B", "2024-02-15", "2024-03-01", 1100, 1000, false, 0),
 			},
@@ -75,7 +74,7 @@ func TestWashSaleDetection(t *testing.T) {
 		},
 		{
 			name: "Large loss with wash sale adjustment",
-			transactions: []types.Transaction{
+			transactions: []Transaction{
 				createTestTransaction("100 sh APPLE INC", "2023-06-01", "2024-06-14", 15000, 20000, true, 1500),
 				// No repurchase
 			},
@@ -173,7 +172,7 @@ func TestYearFiltering(t *testing.T) {
 	extendedWindow := 35
 	maxWindow := 45
 
-	transactions := []types.Transaction{
+	transactions := []Transaction{
 		createTestTransaction("TEST SECURITY", "2023-01-01", "2023-12-31", 900, 1000, true, 100), // Previous year
 		createTestTransaction("TEST SECURITY", "2024-01-01", "2024-02-01", 900, 1000, true, 100), // Target year
 		createTestTransaction("TEST SECURITY", "2025-01-01", "2025-02-01", 900, 1000, true, 100), // Next year
@@ -203,7 +202,7 @@ func TestLargeLossWashSaleWithoutRepurchase(t *testing.T) {
 
 	largeLossTx := createTestTransaction("100 sh APPLE INC", "2023-06-01", "2024-06-14", 15000, 20000, true, 1500)
 
-	analysis := AnalyzeTransactions([]types.Transaction{largeLossTx}, year, extendedWindow, maxWindow)
+	analysis := AnalyzeTransactions([]Transaction{largeLossTx}, year, extendedWindow, maxWindow)
 
 	// The transaction should be marked as suspicious
 	if len(analysis.SuspiciousWashSales) != 1 {
@@ -244,7 +243,7 @@ func TestPositionAnalysis(t *testing.T) {
 	maxWindow := 45
 
 	// Create test transactions with a variety of winning and losing trades
-	transactions := []types.Transaction{
+	transactions := []Transaction{
 		// AAPL - 2 winning trades, 1 losing trade
 		createTestTransaction("AAPL", "2024-01-01", "2024-02-01", 1100, 1000, false, 0), // +100 gain
 		createTestTransaction("AAPL", "2024-03-01", "2024-04-01", 1200, 1000, false, 0), // +200 gain
@@ -384,7 +383,7 @@ func floatEquals(a, b, epsilon float64) bool {
 }
 
 // Helper function to create test transactions
-func createTestTransaction(description string, dateAcquired, dateSold string, proceeds, costBasis float64, isWashSale bool, adjustment float64) types.Transaction {
+func createTestTransaction(description string, dateAcquired, dateSold string, proceeds, costBasis float64, isWashSale bool, adjustment float64) Transaction {
 	da, _ := time.Parse("2006-01-02", dateAcquired)
 	ds, _ := time.Parse("2006-01-02", dateSold)
 
@@ -393,7 +392,7 @@ func createTestTransaction(description string, dateAcquired, dateSold string, pr
 		codes = "W"
 	}
 
-	return types.Transaction{
+	return Transaction{
 		Description:   description,
 		DateAcquired:  da,
 		DateSold:      ds,
@@ -409,7 +408,7 @@ func createTestTransaction(description string, dateAcquired, dateSold string, pr
 }
 
 func TestPositionPerformanceConsolidation(t *testing.T) {
-	transactions := []types.Transaction{
+	transactions := []Transaction{
 		createTestTransaction("100 sh XYZ", "2024-01-01", "2024-02-01", 2000, 1000, false, 0),
 		createTestTransaction("XYZ 200 sh", "2024-01-01", "2024-02-02", 100, 1000, false, 0),
 		createTestTransaction("XYZ 20SEP24 100 C", "2024-01-01", "2024-02-02", 200, 100, false, 0),

@@ -3,11 +3,11 @@ package report
 import (
 	"fmt"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintStandardAnalysis prints a standard analysis report
-func PrintStandardAnalysis(analysis types.TaxAnalysis) {
+func PrintStandardAnalysis(analysis form8949.TaxAnalysis) {
 	// Count VARIOUS lots
 	variousCount := 0
 	variousAdjustment := 0.0

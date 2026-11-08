@@ -5,7 +5,7 @@ import (
 	"github.com/mhpenta/ibkr-form8949/internal/washsale"
 	"sort"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // Common utility functions used by multiple report types
@@ -27,7 +27,7 @@ func ExtractBaseName(fullName string) string {
 	return name
 }
 
-func sortPositions(positions []types.PositionSummary, score func(types.PositionSummary) float64) {
+func sortPositions(positions []form8949.PositionSummary, score func(form8949.PositionSummary) float64) {
 	sort.Slice(positions, func(i, j int) bool {
 		a, b := score(positions[i]), score(positions[j])
 		if a == b {
@@ -36,17 +36,17 @@ func sortPositions(positions []types.PositionSummary, score func(types.PositionS
 		return a > b
 	})
 }
-func SortPositionsByGainLoss(p []types.PositionSummary) {
-	sortPositions(p, func(x types.PositionSummary) float64 { return x.TotalGainOrLoss })
+func SortPositionsByGainLoss(p []form8949.PositionSummary) {
+	sortPositions(p, func(x form8949.PositionSummary) float64 { return x.TotalGainOrLoss })
 }
-func SortPositionsByTradeCount(p []types.PositionSummary) {
-	sortPositions(p, func(x types.PositionSummary) float64 { return float64(x.TransactionCount) })
+func SortPositionsByTradeCount(p []form8949.PositionSummary) {
+	sortPositions(p, func(x form8949.PositionSummary) float64 { return float64(x.TransactionCount) })
 }
-func SortPositionsByWinRate(p []types.PositionSummary) {
-	sortPositions(p, func(x types.PositionSummary) float64 { return x.HitRate })
+func SortPositionsByWinRate(p []form8949.PositionSummary) {
+	sortPositions(p, func(x form8949.PositionSummary) float64 { return x.HitRate })
 }
-func SortPositionsByProfitFactor(p []types.PositionSummary) {
-	sortPositions(p, func(x types.PositionSummary) float64 { return x.ProfitFactor })
+func SortPositionsByProfitFactor(p []form8949.PositionSummary) {
+	sortPositions(p, func(x form8949.PositionSummary) float64 { return x.ProfitFactor })
 }
 
 func percent(count, total int) float64 {

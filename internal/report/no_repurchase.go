@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintNoRepurchaseReport generates a detailed report focusing only on wash sales with no matching repurchase
-func PrintNoRepurchaseReport(analysis types.TaxAnalysis) {
+func PrintNoRepurchaseReport(analysis form8949.TaxAnalysis) {
 	// Filter to get only suspicious wash sales without nearby purchases
-	var noRepurchaseWashSales []types.Transaction
+	var noRepurchaseWashSales []form8949.Transaction
 	var totalAdjustment float64
 	var totalGainLoss float64
 
@@ -43,7 +43,7 @@ func PrintNoRepurchaseReport(analysis types.TaxAnalysis) {
 	}
 
 	// Group by security
-	securityMap := make(map[string][]types.Transaction)
+	securityMap := make(map[string][]form8949.Transaction)
 	securityAdjustments := make(map[string]float64)
 	securityCounts := make(map[string]int)
 
@@ -148,7 +148,7 @@ type SecuritySummary struct {
 	Name         string
 	Adjustment   float64
 	Count        int
-	Transactions []types.Transaction
+	Transactions []form8949.Transaction
 }
 
 // Helper function for sorting securities by adjustment amount

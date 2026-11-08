@@ -3,11 +3,11 @@ package report
 import (
 	"fmt"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintQuarterlyAnalysis prints a quarterly breakdown of gains/losses
-func PrintQuarterlyAnalysis(analysis types.TaxAnalysis) {
+func PrintQuarterlyAnalysis(analysis form8949.TaxAnalysis) {
 	fmt.Println("\n=== Calendar-Quarter Realized Gain/Loss ===")
 
 	fmt.Println("\nQuarter | Transactions | Total Proceeds | Total Cost | Total Gain/(Loss) | Short-Term | Long-Term | Unknown Term")

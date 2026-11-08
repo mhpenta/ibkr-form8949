@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mhpenta/ibkr-form8949/internal"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 	"github.com/mhpenta/ibkr-form8949/internal/report"
 )
 
@@ -46,7 +46,7 @@ func main() {
 	}
 
 	// Process the CSV file
-	transactions, csvYear, err := internal.ParseCSVFile(*csvFilePath)
+	transactions, csvYear, err := form8949.ParseCSVFile(*csvFilePath)
 	if err != nil {
 		slog.Error("Failed to parse CSV file", "error", err)
 		os.Exit(1)
@@ -98,7 +98,7 @@ func main() {
 	}
 
 	// Analyze the transactions
-	analysis := internal.AnalyzeTransactions(transactions, *year, *extendedWindow, *maxWindow)
+	analysis := form8949.AnalyzeTransactions(transactions, *year, *extendedWindow, *maxWindow)
 
 	if len(analysis.Transactions) == 0 {
 		slog.Error("No dispositions found for selected year", "year", *year, "loaded", len(transactions))

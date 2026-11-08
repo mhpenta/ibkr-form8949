@@ -8,7 +8,7 @@ main:
 	go build -o ibkr-form8949 .
 
 activity:
-	go build -o ibkr-activity ./cmd/activity
+	go build -o ibkr-activity ./cmd/ibkr-activity
 
 test:
 	go test ./...

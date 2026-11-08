@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/mhpenta/ibkr-form8949/internal/types"
+	"github.com/mhpenta/ibkr-form8949/internal/form8949"
 )
 
 // PrintLotsReport prints a detailed lots-based analysis
-func PrintLotsReport(analysis types.TaxAnalysis) {
+func PrintLotsReport(analysis form8949.TaxAnalysis) {
 	fmt.Println("\n=== DETAILED LOTS ANALYSIS ===")
 	fmt.Println("This report provides a detailed analysis of individual lots traded in the tax year")
 
