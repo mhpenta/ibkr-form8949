@@ -51,6 +51,22 @@ func (r *ActivityReport) PrintCoverage(asOf time.Time) {
 	}
 }
 
+// PrintWindowCoverage also warns when the statement starts inside the 30 days
+// before asOf: loss sales from those missing days could still have open windows.
+func (r *ActivityReport) PrintWindowCoverage(asOf time.Time) {
+	r.PrintCoverage(asOf)
+	if r.PeriodStart.IsZero() || r.PeriodEnd.IsZero() {
+		return
+	}
+	day := washsale.Day(asOf)
+	lookback := day.AddDate(0, 0, -30)
+	// An as-of date before the statement start is already reported above.
+	if lookback.Before(r.PeriodStart) && !day.Before(r.PeriodStart) {
+		fmt.Printf("The statement starts on %s; loss sales from %s through %s are not included and could still have open windows.\n",
+			r.PeriodStart.Format(time.DateOnly), lookback.Format(time.DateOnly), r.PeriodStart.AddDate(0, 0, -1).Format(time.DateOnly))
+	}
+}
+
 // A reconciled broker snapshot can establish a flat position after a trade.
 // An opening quantity alone is not a dated acquisition or a tax lot.
 func markKnownFlatPositions(r *ActivityReport) {

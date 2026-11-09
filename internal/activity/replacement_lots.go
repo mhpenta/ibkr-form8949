@@ -116,7 +116,7 @@ func inspectInventory(trades []Trade) map[int]WashSaleAnalysis {
 
 	checks := make(map[int]WashSaleAnalysis)
 	for i, sale := range trades {
-		if !sale.IsSale || (sale.RealizedPL >= 0 && !sale.IsWashSale) {
+		if !sale.IsLossSale() {
 			continue
 		}
 		check := WashSaleAnalysis{Trade: sale}

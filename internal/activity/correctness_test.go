@@ -177,3 +177,44 @@ func TestReplacementAccountsAndSameDayUncertainty(t *testing.T) {
 		t.Fatal("ambiguous same-day order accepted")
 	}
 }
+
+func TestLosingClosedLotMarksItsSale(t *testing.T) {
+	profitable := "Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-06-01,60,,,,,700,40,,\n"
+	losing := "Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-07-01,40,,,,,500,-60,,\n"
+	cover := "Trades,Data,Order,Stocks,USD,ABC,\"2024-02-01, 11:00:00\",100,5,5,-500,-1,600,-101,0,C\n"
+	coverLot := "Trades,Data,ClosedLot,Stocks,USD,ABC,2024-01-15,-100,,,,,600,-101,,\n"
+	executions := strings.ReplaceAll(activityBuy+activitySale, ",Order,", ",Trade,")
+	for name, test := range map[string]struct {
+		data string
+		want bool
+	}{
+		"losing lot under net profitable order":   {activitySale + profitable + losing, true},
+		"only profitable lots":                    {activitySale + profitable, false},
+		"lots follow executions; order rows kept": {activitySale + executions + profitable + losing, true},
+		"losing lot of a buy-to-cover is no sale": {activitySale + profitable + cover + coverLot, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := ParseActivityReportReader(strings.NewReader(activityHeader + activityBuy + test.data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sale *Trade
+			for i := range r.Trades {
+				if r.Trades[i].Symbol == "XYZ" && r.Trades[i].IsSale {
+					if sale != nil {
+						t.Fatalf("duplicate sale: %+v", r.Trades)
+					}
+					sale = &r.Trades[i]
+				}
+			}
+			if sale == nil || sale.HasLossLot != test.want || sale.IsLossSale() != test.want {
+				t.Fatalf("sale=%+v want loss lot %v", sale, test.want)
+			}
+			for _, trade := range r.Trades {
+				if trade.Symbol == "ABC" && trade.HasLossLot {
+					t.Fatal("buy-to-cover marked as a loss sale")
+				}
+			}
+		})
+	}
+}

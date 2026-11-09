@@ -63,7 +63,7 @@ func TestRepurchaseReportDay30And31(t *testing.T) {
 
 func TestCalendarLinkUsesExclusiveNextDay(t *testing.T) {
 	d := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
-	link, err := url.Parse(createGoogleCalendarLink("XYZ & A", d, -100))
+	link, err := url.Parse(createGoogleCalendarLink("XYZ & A", d, "$-100.00"))
 	if err != nil {
 		t.Fatal(err)
 	}

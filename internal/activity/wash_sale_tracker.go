@@ -17,6 +17,16 @@ type WashSalePeriod struct {
 	LossAmount    float64
 	Quantity      float64
 	TradePrice    float64
+	Currency      string // Trading currency of LossAmount and TradePrice
+}
+
+// FormatAmount labels an amount with its trading currency. USD, or an unknown
+// currency, keeps the $ prefix; other currencies are not converted.
+func FormatAmount(amount float64, currency string) string {
+	if currency == "" || currency == "USD" {
+		return fmt.Sprintf("$%.2f", amount)
+	}
+	return fmt.Sprintf("%.2f %s", amount, currency)
 }
 
 // GetActiveWashSalePeriods returns a list of active wash sale periods based on the activity report
@@ -88,8 +98,8 @@ func getSymbolWashSalePeriods(symbol string, trades []Trade, date time.Time) []W
 
 	// Include calendar days 0 through 30; day 31 is outside the window.
 	for _, trade := range trades {
-		// LD can make the reported P/L zero or positive after disallowance.
-		if !trade.IsSale || (trade.RealizedPL >= 0 && !trade.IsWashSale) {
+		// LD or a losing closed lot can leave the reported P/L zero or positive.
+		if !trade.IsLossSale() {
 			continue
 		}
 
@@ -108,6 +118,7 @@ func getSymbolWashSalePeriods(symbol string, trades []Trade, date time.Time) []W
 			LossAmount:    trade.RealizedPL, // Reported P/L may include disallowed loss.
 			Quantity:      math.Abs(trade.Quantity),
 			TradePrice:    trade.TradePrice,
+			Currency:      trade.Currency,
 		}
 
 		periods = append(periods, period)
@@ -167,14 +178,14 @@ func PrintActiveWashSalePeriods(periods []WashSalePeriod, reportDate time.Time, 
 		for _, period := range group.periods {
 			daysRemaining := max(0, washsale.DaysBetween(reportDate, period.PeriodEndDate))
 
-			fmt.Printf("%s | %s | %s | %d days | $%.2f | %.0f | $%.2f\n",
+			fmt.Printf("%s | %s | %s | %d days | %s | %.0f | %s\n",
 				period.Symbol,
 				period.SaleDate.Format("01/02/2006"),
 				period.PeriodEndDate.Format("01/02/2006"),
 				daysRemaining,
-				period.LossAmount,
+				FormatAmount(period.LossAmount, period.Currency),
 				period.Quantity,
-				period.TradePrice)
+				FormatAmount(period.TradePrice, period.Currency))
 		}
 	}
 
@@ -197,6 +208,6 @@ func PrintActiveWashSalePeriods(periods []WashSalePeriod, reportDate time.Time, 
 // PrintWashSaleScope states the limits of the repurchase-window inspection.
 func PrintWashSaleScope() {
 	fmt.Println("\nOnly supplied trades are checked. Missing trades, other accounts, substantially identical securities,")
-	fmt.Println("short positions and individual loss lots hidden by net profitable orders require separate review.")
+	fmt.Println("short positions, and loss lots inside net profitable orders when the export has no closed-lot rows, require separate review.")
 	fmt.Println("Reported P/L may already include wash-sale adjustments. These dates do not validate earlier wash sales.")
 }

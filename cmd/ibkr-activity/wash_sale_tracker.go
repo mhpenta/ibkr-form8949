@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mhpenta/ibkr-form8949/internal/activity"
@@ -11,10 +12,14 @@ import (
 )
 
 // createGoogleCalendarLink generates an event URL for the first date outside a sale's window.
-func createGoogleCalendarLink(symbol string, repurchaseDate time.Time, lossAmount float64) string {
+// An empty reportedPL marks a symbol with no active window in the supplied trades.
+func createGoogleCalendarLink(symbol string, repurchaseDate time.Time, reportedPL string) string {
 	// Format title and details for the event
 	title := fmt.Sprintf("Review Repurchase Window: %s", symbol)
-	details := fmt.Sprintf("The 30-day window for the supplied %s loss sales has ended. Review newer trades and other accounts before repurchasing.\nReported P/L: $%.2f", symbol, lossAmount)
+	details := fmt.Sprintf("No active loss-sale window for %s was found in the supplied trades. Review newer trades and other accounts before repurchasing.", symbol)
+	if reportedPL != "" {
+		details = fmt.Sprintf("The 30-day window for the supplied %s loss sales has ended. Review newer trades and other accounts before repurchasing.\nReported P/L: %s", symbol, reportedPL)
+	}
 
 	// Create URL with parameters
 	params := url.Values{}
@@ -44,7 +49,7 @@ func AnalyzeWashSalePeriods(csvFilePath string) error {
 	}
 	report.Today = reportDate
 
-	report.PrintCoverage(reportDate)
+	report.PrintWindowCoverage(reportDate)
 	// Get active wash sale periods
 	activePeriods := activity.GetActiveWashSalePeriods(report)
 
@@ -72,31 +77,28 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 	activePeriods := activity.GetActiveWashSalePeriods(&asOfReport)
 
 	type SymbolData struct {
-		endDate   time.Time
-		lossTotal float64
+		endDate time.Time
+		// Reported P/L by trading currency; amounts are never converted.
+		plByCurrency map[string]float64
 	}
 
-	symbolDataMap := make(map[string]SymbolData)
+	symbolDataMap := make(map[string]*SymbolData)
 
 	for _, period := range activePeriods {
 		symbolData, exists := symbolDataMap[period.Symbol]
 		if !exists {
-			symbolData = SymbolData{
-				endDate:   period.PeriodEndDate,
-				lossTotal: period.LossAmount,
-			}
-		} else {
-			if period.PeriodEndDate.After(symbolData.endDate) {
-				symbolData.endDate = period.PeriodEndDate
-			}
-			symbolData.lossTotal += period.LossAmount
+			symbolData = &SymbolData{endDate: period.PeriodEndDate, plByCurrency: make(map[string]float64)}
+			symbolDataMap[period.Symbol] = symbolData
 		}
-		symbolDataMap[period.Symbol] = symbolData
+		if period.PeriodEndDate.After(symbolData.endDate) {
+			symbolData.endDate = period.PeriodEndDate
+		}
+		symbolData.plByCurrency[period.Currency] += period.LossAmount
 	}
 
 	fmt.Printf("\n=== SAFE REPURCHASE DATES ===\n")
 	fmt.Printf("As of: %s\n\n", comparisonDate.Format("January 2, 2006"))
-	report.PrintCoverage(comparisonDate)
+	report.PrintWindowCoverage(comparisonDate)
 	defer activity.PrintWashSaleScope()
 
 	if len(symbolDataMap) == 0 {
@@ -115,10 +117,10 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 	}
 
 	type safeDate struct {
-		Symbol    string
-		LossTotal float64
-		Date      time.Time
-		DaysWait  int
+		Symbol     string
+		ReportedPL string
+		Date       time.Time
+		DaysWait   int
 	}
 
 	var safeDates []safeDate
@@ -129,10 +131,10 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 		}
 
 		safeDates = append(safeDates, safeDate{
-			Symbol:    symbol,
-			LossTotal: data.lossTotal,
-			Date:      data.endDate,
-			DaysWait:  daysToWait,
+			Symbol:     symbol,
+			ReportedPL: formatCurrencyAmounts(data.plByCurrency),
+			Date:       data.endDate,
+			DaysWait:   daysToWait,
 		})
 	}
 
@@ -144,9 +146,9 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 	})
 
 	for _, sd := range safeDates {
-		fmt.Printf("%s | $%.2f | %s | %d days", sd.Symbol, sd.LossTotal, sd.Date.Format("01/02/2006"), sd.DaysWait)
+		fmt.Printf("%s | %s | %s | %d days", sd.Symbol, sd.ReportedPL, sd.Date.Format("01/02/2006"), sd.DaysWait)
 		if withGoogleCalendarLinks {
-			fmt.Printf(" | %s", createGoogleCalendarLink(sd.Symbol, sd.Date, sd.LossTotal))
+			fmt.Printf(" | %s", createGoogleCalendarLink(sd.Symbol, sd.Date, sd.ReportedPL))
 		}
 		fmt.Println()
 	}
@@ -168,7 +170,7 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 		sort.Strings(safeSymbols)
 		for _, symbol := range safeSymbols {
 			if withGoogleCalendarLinks {
-				link := createGoogleCalendarLink(symbol, comparisonDate, 0)
+				link := createGoogleCalendarLink(symbol, comparisonDate, "")
 				fmt.Printf("• %s - No active window found in supplied trades | %s\n", symbol, link)
 			} else {
 				fmt.Printf("• %s - No active window found in supplied trades\n", symbol)
@@ -179,4 +181,18 @@ func printSafeRepurchaseDates(report *activity.ActivityReport, comparisonDate ti
 	}
 
 	return nil
+}
+
+// formatCurrencyAmounts lists one amount per trading currency, in currency order.
+func formatCurrencyAmounts(byCurrency map[string]float64) string {
+	currencies := make([]string, 0, len(byCurrency))
+	for currency := range byCurrency {
+		currencies = append(currencies, currency)
+	}
+	sort.Strings(currencies)
+	parts := make([]string, len(currencies))
+	for i, currency := range currencies {
+		parts[i] = activity.FormatAmount(byCurrency[currency], currency)
+	}
+	return strings.Join(parts, " + ")
 }

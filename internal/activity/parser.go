@@ -53,6 +53,13 @@ type Trade struct {
 	IsSale            bool
 	IsOption          bool
 	IsWashSale        bool
+	HasLossLot        bool // A closed-lot row for this sale reported a loss
+}
+
+// IsLossSale reports a sale that can start a wash-sale window: a net loss, an
+// LD-coded sale, or a net profitable sale whose closed-lot detail shows a losing lot.
+func (t Trade) IsLossSale() bool {
+	return t.IsSale && (t.RealizedPL < 0 || t.IsWashSale || t.HasLossLot)
 }
 
 // HasCode checks for a complete IBKR trade code in the semicolon-separated list.
@@ -213,11 +220,17 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 	}
 	var candidates []candidate
 	levels := make(map[string]map[string][]Trade)
+	// Closed-lot rows follow the sale they close. A losing lot inside a net
+	// profitable sale still starts a window, so remember its sale's key and day.
+	// The window depends only on the sale day, so same-day sales share the mark.
+	lossLotSales := make(map[string]bool)
+	lastSale := -1
 	for i, record := range records {
 		if len(record) < 2 || record[0] != "Trades" {
 			continue
 		}
 		if record[1] == "Header" {
+			lastSale = -1
 			header = record
 			if _, err := fieldIndexes(header); err != nil {
 				return nil, fmt.Errorf("line %d: %w", lines[i], err)
@@ -232,7 +245,16 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 		}
 		fields, _ := fieldIndexes(header)
 		level := getField(record, fields, "DataDiscriminator")
-		if strings.HasPrefix(level, "Total") || strings.HasPrefix(level, "SubTotal") || level == "ClosedLot" || level == "Lot" {
+		if level == "ClosedLot" {
+			if lastSale >= 0 && strings.EqualFold(getField(record, fields, "Symbol"), candidates[lastSale].trade.Symbol) {
+				if pl, err := parseNumber(getField(record, fields, "Realized P/L")); err == nil && pl < 0 {
+					lossLotSales[lossLotKey(candidates[lastSale].trade)] = true
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(level, "Total") || strings.HasPrefix(level, "SubTotal") || level == "Lot" {
+			lastSale = -1
 			continue
 		}
 		if level != "Order" && level != "Trade" {
@@ -251,6 +273,10 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 		}
 		levels[key][level] = append(levels[key][level], trade)
 		candidates = append(candidates, candidate{trade, level})
+		lastSale = -1
+		if trade.IsSale {
+			lastSale = len(candidates) - 1
+		}
 		if _, ok := fields["Code"]; !ok {
 			report.Warnings = append(report.Warnings, "Trade codes are absent; broker wash-sale flags are unavailable")
 		}
@@ -269,6 +295,9 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 	for _, c := range candidates {
 		if c.level == "Trade" && len(levels[tradeInventoryKey(c.trade)]["Order"]) > 0 {
 			continue
+		}
+		if c.trade.IsSale && lossLotSales[lossLotKey(c.trade)] {
+			c.trade.HasLossLot = true
 		}
 		report.Trades = append(report.Trades, c.trade)
 	}
@@ -422,6 +451,10 @@ func parseNumber(value string) (float64, error) {
 
 func tradeInventoryKey(t Trade) string {
 	return t.Account + "\x00" + t.AssetCategory + "\x00" + t.Currency + "\x00" + t.Symbol
+}
+
+func lossLotKey(t Trade) string {
+	return tradeInventoryKey(t) + "\x00" + t.DateTime.Format(time.DateOnly)
 }
 
 // Compare per-day buy/sell totals so partial execution detail cannot silently

@@ -68,7 +68,7 @@ func analyzeSymbolPosition(path, symbol string, printAll bool) error {
 				lastDateOnlySale = t.DateTime
 			}
 		}
-		if t.RealizedPL >= 0 && !t.IsWashSale {
+		if t.RealizedPL >= 0 && !t.IsWashSale && !t.HasLossLot {
 			continue
 		}
 		closes := t.HasCode("C")
@@ -130,7 +130,7 @@ func analyzeSymbolPosition(path, symbol string, printAll bool) error {
 		fmt.Printf("Latest loss or LD adjustment requiring trade classification: %s\n", lastOtherLoss.Format(time.DateOnly))
 	}
 	if lastLongLoss.IsZero() && lastShortLoss.IsZero() && lastOtherLoss.IsZero() {
-		fmt.Println("No net loss or LD-coded transaction found in supplied trades; individual loss lots may be hidden by order totals.")
+		fmt.Println("No net loss, LD-coded transaction or losing closed lot found in supplied trades; without closed-lot rows, individual loss lots may be hidden by order totals.")
 	}
 	activity.PrintWashSaleScope()
 	return nil
