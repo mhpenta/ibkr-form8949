@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func readParts(t *testing.T, book *Workbook) map[string]string {
@@ -107,5 +108,15 @@ func TestEmptyWorkbookFails(t *testing.T) {
 	var book Workbook
 	if err := book.Write(io.Discard); err == nil {
 		t.Fatal("expected an error for a workbook without sheets")
+	}
+}
+
+func TestDateCells(t *testing.T) {
+	at := time.Date(2024, 1, 1, 18, 0, 0, 0, time.FixedZone("EST", -5*3600))
+	if c := Date(at); c.number != 45292 || c.style != StyleDate {
+		t.Fatalf("Date = %+v, want serial 45292 using the written calendar date", c)
+	}
+	if c := DateTime(at); c.number != 45292.75 || c.style != StyleDateTime {
+		t.Fatalf("DateTime = %+v, want 45292.75", c)
 	}
 }

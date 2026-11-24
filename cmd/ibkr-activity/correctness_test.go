@@ -26,7 +26,7 @@ func writeActivity(t *testing.T, text string) string {
 func TestAllAndPositionShareTradeParser(t *testing.T) {
 	data := commandHeader + commandBuy + commandSale + strings.Replace(commandSale, ",Order,", ",ClosedLot,", 1)
 	path := writeActivity(t, data)
-	all, err := captureStdout(func() error { return AnalyzeAllSecurities(path, "") })
+	all, err := captureStdout(func() error { return AnalyzeAllSecurities([]string{path}, "") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +169,42 @@ func TestSafeRepurchaseLabelsReportedPLCurrency(t *testing.T) {
 	}
 	if strings.Contains(out, "$-121000.00") {
 		t.Fatal("KRW amount labelled as dollars")
+	}
+}
+
+func TestSameDayProfitableSaleExcludedFromWashSaleAndSafeRepurchase(t *testing.T) {
+	data := "Statement,Data,WhenGenerated,\"2024-02-10, 12:00:00 MST\"\n" +
+		commandHeader +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 10:00:00\",-100,15,15,1500,0,-1000,500,0,C\n" +
+		"Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-06-01,100,,,,,1000,500,,\n" +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 11:00:00\",-100,14.5,14.5,1450,0,-1500,-50,0,C\n" +
+		"Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-07-01,100,,,,,1500,-50,,\n"
+
+	path := writeActivity(t, data)
+	periodsOut, err := captureStdout(func() error { return AnalyzeWashSalePeriods([]string{path}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(periodsOut, "Found 1 active wash sale periods:") || !strings.Contains(periodsOut, "$-50.00") {
+		t.Fatalf("expected only 1 active loss-sale period:\n%s", periodsOut)
+	}
+	if strings.Contains(periodsOut, "$500.00") {
+		t.Fatalf("profitable same-day sale leaked into wash-sale periods:\n%s", periodsOut)
+	}
+
+	report, err := activity.ParseActivityReportReader(strings.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf, _ := time.Parse(time.DateOnly, "2024-02-10")
+	safeOut, err := captureStdout(func() error { return printSafeRepurchaseDates(report, asOf, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(safeOut, "XYZ | $-50.00 | 03/03/2024 | 22 days") {
+		t.Fatalf("expected $-50.00 reported P/L:\n%s", safeOut)
+	}
+	if strings.Contains(safeOut, "$450.00") {
+		t.Fatalf("profitable same-day sale corrupted safe-repurchase P/L:\n%s", safeOut)
 	}
 }

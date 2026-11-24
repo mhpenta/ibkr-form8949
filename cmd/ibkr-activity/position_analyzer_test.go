@@ -188,3 +188,44 @@ func captureStdout(fn func() error) (string, error) {
 
 	return buf.String(), runErr
 }
+
+func TestAnalyzeSymbolPositionPricesAndWorkbook(t *testing.T) {
+	data := "Statement,Data,Period,\"January 1, 2024 - December 31, 2024\"\n" + positionTradeHeader +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-01-03, 10:00:00\",100,10,-1000,-1,1001,0,O\n" +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-01-20, 10:00:00\",100,12,-1200,-1,1201,0,O\n" +
+		"Trades,Data,Order,Stocks,USD,XYZ,2024-02-05,-150,9,1350,-1,-1601,-252,C\n"
+	path := writeActivity(t, data)
+	out := filepath.Join(t.TempDir(), "xyz.xlsx")
+	stdout, err := captureStdout(func() error { return analyzeSymbolPosition([]string{path}, "XYZ", true, out) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Average Buy Price: $11.00 ($11.01 with commissions) over 200 shares in 2 trades",
+		"Average Sell Price: $9.00 ($8.9933 with commissions) over 150 shares in 1 trade",
+		"Average IBKR Cost of Shares Sold: $10.6733 over 150 shares",
+		"Opening quantity unavailable",
+		"Average Price of Open Shares: $11.00 on 50 long shares",
+		"2024-02-05 | Sell | 150 | $9.00 | $-1.00 | $-252.00 | C | 50 | $11.00",
+		"Spreadsheet written to " + out,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("missing %q:\n%s", want, stdout)
+		}
+	}
+
+	parts := readWorkbook(t, out)
+	for _, sheet := range []string{"Summary", "Transactions", "Monthly", "Price Ranges", "Loss Sales"} {
+		if !strings.Contains(parts["xl/workbook.xml"], `<sheet name="`+sheet+`"`) {
+			t.Fatalf("missing sheet %s:\n%s", sheet, parts["xl/workbook.xml"])
+		}
+	}
+	transactions := parts["xl/worksheets/sheet2.xml"]
+	// Three trades below the header, each with a real date cell.
+	if !strings.Contains(transactions, `<autoFilter ref="A1:N4"/>`) || !strings.Contains(transactions, `<c r="A4" s="7"><v>45327</v></c>`) {
+		t.Fatalf("unexpected transactions sheet:\n%s", transactions)
+	}
+	if loss := parts["xl/worksheets/sheet5.xml"]; !strings.Contains(loss, `<autoFilter ref="A1:L2"/>`) {
+		t.Fatalf("expected one loss sale:\n%s", loss)
+	}
+}

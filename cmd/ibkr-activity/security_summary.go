@@ -75,13 +75,13 @@ func summarizeTradeRows(performances []TradeRowSecurityPerformance) tradeRowTota
 // AnalyzeAllSecurities analyzes all securities in the IBKR activity report. When
 // xlsxPath is set, it also writes every security, not just the top and bottom 20,
 // to a spreadsheet at that path.
-func AnalyzeAllSecurities(csvFilePath, xlsxPath string) error {
-	report, err := activity.ParseActivityReport(csvFilePath)
+func AnalyzeAllSecurities(files []string, xlsxPath string) error {
+	report, err := loadStatements(files)
 	if err != nil {
 		return err
 	}
 	records := [][]string{{"Statement", "Data", "Period", report.Period}}
-	if len(report.MarkToMarketPerformance) > 0 {
+	if len(report.MarkToMarketPerformance) > 0 && !report.MarkToMarketPLUnavailable {
 		printMarkToMarketPerformanceReport(records, report)
 		if xlsxPath != "" {
 			if err := writeMarkToMarketWorkbook(xlsxPath, markToMarketReportTitle(records), report); err != nil {

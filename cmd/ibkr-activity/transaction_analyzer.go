@@ -27,14 +27,23 @@ func printTransactionList(report *activity.ActivityReport, symbol string) {
 	}
 	trades = append([]activity.Trade(nil), trades...)
 	sort.SliceStable(trades, func(i, j int) bool { return trades[i].DateTime.Before(trades[j].DateTime) })
+	combined := len(report.Sources) > 1
 	fmt.Println("ALL TRANSACTIONS:")
-	fmt.Println("Date/Time | Symbol | Type | Quantity | Currency | Price | Reported Realized P/L")
+	header := "Date/Time | Symbol | Type | Quantity | Currency | Price | Reported Realized P/L"
+	if combined {
+		header += " | Statement"
+	}
+	fmt.Println(header)
 	for _, t := range trades {
 		pl := "--"
 		if !t.RealizedPLMissing {
 			pl = strconv.FormatFloat(t.RealizedPL, 'f', 2, 64)
 		}
-		fmt.Printf("%s | %s | %s | %g | %s | %g | %s\n", tradeTimestamp(t), t.Symbol, tradeSide(t), math.Abs(t.Quantity), t.Currency, t.TradePrice, pl)
+		line := fmt.Sprintf("%s | %s | %s | %g | %s | %g | %s", tradeTimestamp(t), t.Symbol, tradeSide(t), math.Abs(t.Quantity), t.Currency, t.TradePrice, pl)
+		if combined {
+			line += " | " + t.Source
+		}
+		fmt.Println(line)
 	}
 }
 

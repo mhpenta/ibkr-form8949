@@ -39,7 +39,7 @@ func TestAnalyzeAllWritesTradeRowWorkbook(t *testing.T) {
 	path := writeActivity(t, data)
 	out := filepath.Join(t.TempDir(), "analysis.xlsx")
 
-	stdout, err := captureStdout(func() error { return AnalyzeAllSecurities(path, out) })
+	stdout, err := captureStdout(func() error { return AnalyzeAllSecurities([]string{path}, out) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ Mark-to-Market Performance Summary,Data,Total (All Assets),,,,,,-2000.5,-350.5,1
 `
 	path := writeActivity(t, data)
 	out := filepath.Join(t.TempDir(), "mtm.xlsx")
-	if _, err := captureStdout(func() error { return AnalyzeAllSecurities(path, out) }); err != nil {
+	if _, err := captureStdout(func() error { return AnalyzeAllSecurities([]string{path}, out) }); err != nil {
 		t.Fatal(err)
 	}
 

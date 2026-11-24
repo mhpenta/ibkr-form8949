@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -13,27 +14,30 @@ import (
 
 func main() {
 	// Set up command line flags
-	activityFile := flag.String("file", "", "Path to the IBKR Activity Report CSV file")
+	var files statementFiles
+	flag.Var(&files, "file", "Path to an IBKR activity statement CSV; repeat it, or list more paths after it, to combine statements")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 	symbol := flag.String("symbol", "", "Focus analysis on a specific symbol")
 	analyzePosition := flag.Bool("analyze-position", false, "Summarize trades and statement holdings for the specified stock symbol")
 	analyzeAll := flag.Bool("analyze-all", false, "Run analysis on all securities traded")
-	xlsxPath := flag.String("xlsx", "", "Also write the --analyze-all results to this .xlsx spreadsheet (opens in Google Sheets and Excel)")
+	xlsxPath := flag.String("xlsx", "", "Also write the --analyze-all or --analyze-position results to this .xlsx spreadsheet (opens in Google Sheets and Excel)")
 	analyzeTransaction := flag.Bool("analyze-transaction", false, "Analyze specific transactions for a symbol")
 	transactionDate := flag.String("date", "", "Date to analyze in YYYY-MM-DD format (required with analyze-transaction)")
 	transactionQuantity := flag.Float64("quantity", 0, "Approximate quantity to look for (optional with analyze-transaction)")
 	analyzeWashSalePeriods := flag.Bool("wash-sale-periods", false, "Analyze active wash sale periods")
 	safeRepurchaseDates := flag.Bool("safe-repurchase", false, "Show first dates outside the supplied loss-sale windows")
 	googleCalendarLinks := flag.Bool("google-calendar-links", false, "Include Google Calendar links for window end dates (used with --safe-repurchase)")
+	allowMultipleAccounts := flag.Bool("allow-multiple-accounts", false, "Combine statements from different accounts (refused by default)")
 	printAllTransactions := flag.Bool("print-all-transactions", false, "List statement trades, optionally filtered by --symbol, or add the timeline to --analyze-position")
-	flag.Parse()
+	files = append(files, parseArgs(flag.CommandLine, os.Args[1:])...)
 	*symbol = strings.ToUpper(strings.TrimSpace(*symbol))
+	mergeOptions.AllowMultipleAccounts = *allowMultipleAccounts
 
 	// Configure logger
 	setupLogger(*logLevel)
 
 	// Validate input file
-	if *activityFile == "" {
+	if len(files) == 0 {
 		slog.Error("No activity file specified")
 		flag.Usage()
 		os.Exit(1)
@@ -44,8 +48,8 @@ func main() {
 	}
 
 	if *xlsxPath != "" {
-		if !*analyzeAll {
-			slog.Error("--xlsx is used with --analyze-all")
+		if !*analyzeAll && !*analyzePosition {
+			slog.Error("--xlsx is used with --analyze-all or --analyze-position")
 			os.Exit(1)
 		}
 		if err := validSpreadsheetPath(*xlsxPath); err != nil {
@@ -56,30 +60,27 @@ func main() {
 
 	// Handle the wash sale periods analysis
 	if *analyzeWashSalePeriods {
-		err := AnalyzeWashSalePeriods(*activityFile)
+		err := AnalyzeWashSalePeriods(files)
 		if err != nil {
-			slog.Error("Failed to analyze wash sale periods", "error", err)
-			os.Exit(1)
+			exitOnError("Failed to analyze wash sale periods", err)
 		}
 		return
 	}
 
 	// Handle the safe repurchase dates analysis
 	if *safeRepurchaseDates {
-		err := GetSafeRepurchaseDates(*activityFile, *googleCalendarLinks)
+		err := GetSafeRepurchaseDates(files, *googleCalendarLinks)
 		if err != nil {
-			slog.Error("Failed to get safe repurchase dates", "error", err)
-			os.Exit(1)
+			exitOnError("Failed to get safe repurchase dates", err)
 		}
 		return
 	}
 
 	// Handle the all securities analysis
 	if *analyzeAll {
-		err := AnalyzeAllSecurities(*activityFile, *xlsxPath)
+		err := AnalyzeAllSecurities(files, *xlsxPath)
 		if err != nil {
-			slog.Error("Failed to analyze all securities", "error", err)
-			os.Exit(1)
+			exitOnError("Failed to analyze all securities", err)
 		}
 		return
 	}
@@ -93,10 +94,9 @@ func main() {
 
 	// Handle the position analysis for a specific symbol
 	if *analyzePosition {
-		err := analyzeSymbolPosition(*activityFile, *symbol, *printAllTransactions)
+		err := analyzeSymbolPosition(files, *symbol, *printAllTransactions, *xlsxPath)
 		if err != nil {
-			slog.Error("Failed to analyze position", "error", err)
-			os.Exit(1)
+			exitOnError("Failed to analyze position", err)
 		}
 		return
 	}
@@ -112,15 +112,13 @@ func main() {
 		// Parse the date
 		date, err := time.Parse("2006-01-02", *transactionDate)
 		if err != nil {
-			slog.Error("Invalid date format, use YYYY-MM-DD", "error", err)
-			os.Exit(1)
+			exitOnError("Invalid date format, use YYYY-MM-DD", err)
 		}
 
 		// Parse the activity report
-		report, err := activity.ParseActivityReport(*activityFile)
+		report, err := loadStatements(files)
 		if err != nil {
-			slog.Error("Failed to parse activity report file", "error", err)
-			os.Exit(1)
+			exitOnError("Failed to parse activity report file", err)
 		}
 
 		// Run the transaction analysis
@@ -129,10 +127,9 @@ func main() {
 	}
 
 	// Load the report for transaction listing or the default analysis.
-	report, err := activity.ParseActivityReport(*activityFile)
+	report, err := loadStatements(files)
 	if err != nil {
-		slog.Error("Failed to parse activity report file", "error", err)
-		os.Exit(1)
+		exitOnError("Failed to parse activity report file", err)
 	}
 	if *printAllTransactions {
 		printTransactionList(report, *symbol)
@@ -145,13 +142,12 @@ func main() {
 	// If a symbol was specified, provide detailed analysis for that symbol
 	if *symbol != "" {
 		symbol := strings.ToUpper(*symbol)
-		trades, found := report.TradesBySymbol[symbol]
-		if !found {
+		if _, found := report.TradesBySymbol[symbol]; !found {
 			fmt.Printf("No trades found for symbol: %s\n", symbol)
 			os.Exit(0)
 		}
 
-		analysis := activity.AnalyzeSymbol(trades)
+		analysis := report.AnalyzeTrades(symbol)
 		activity.PrintSymbolAnalysis(analysis)
 	} else {
 		// Otherwise, print a report of all suspicious wash sales
@@ -179,4 +175,63 @@ func setupLogger(level string) {
 	})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+}
+
+// statementFiles collects every --file value.
+type statementFiles []string
+
+func (f *statementFiles) String() string { return strings.Join(*f, ", ") }
+
+func (f *statementFiles) Set(path string) error {
+	*f = append(*f, path)
+	return nil
+}
+
+// parseArgs parses flags anywhere on the command line and returns the other
+// arguments, so a shell glob such as --file *.csv supplies every matching file.
+func parseArgs(flags *flag.FlagSet, args []string) []string {
+	var extra []string
+	for {
+		if err := flags.Parse(args); err != nil {
+			os.Exit(2)
+		}
+		rest := flags.Args()
+		if len(rest) == 0 {
+			return extra
+		}
+		extra = append(extra, rest[0])
+		args = rest[1:]
+	}
+}
+
+// mergeOptions controls how loadStatements combines several statements.
+var mergeOptions activity.MergeOptions
+
+// exitOnError reports err and exits. Explanations meant for the reader, such as
+// statements from several accounts, print as written rather than as a log line.
+func exitOnError(context string, err error) {
+	var accounts *activity.AccountMismatchError
+	if errors.As(err, &accounts) {
+		fmt.Fprintln(os.Stderr, "\n"+err.Error())
+	} else {
+		slog.Error(context, "error", err)
+	}
+	os.Exit(1)
+}
+
+// loadStatements reads the statement files, combining several into one report,
+// and lists the combined files.
+func loadStatements(files []string) (*activity.ActivityReport, error) {
+	report, err := activity.LoadActivityReports(files, mergeOptions)
+	if err != nil {
+		return nil, err
+	}
+	if len(report.Sources) > 1 {
+		fmt.Printf("Combined %d statements (see warnings for overlaps and gaps):\n", len(report.Sources))
+		for _, source := range report.Sources {
+			fmt.Printf("  %s: %s, %d of %d trades used\n", source.Name, source.Period, source.TradesUsed, source.Trades)
+		}
+		fmt.Println()
+	}
+	return report, nil
 }

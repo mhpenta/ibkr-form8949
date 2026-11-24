@@ -218,3 +218,138 @@ func TestLosingClosedLotMarksItsSale(t *testing.T) {
 		})
 	}
 }
+
+func TestClosedLotRowsAttachToTheirSale(t *testing.T) {
+	lot := func(date, quantity, pl string) string {
+		return "Trades,Data,ClosedLot,Stocks,USD,XYZ," + date + "," + quantity + ",,,,,500," + pl + ",,\n"
+	}
+	acquired, _ := time.Parse(time.DateOnly, "2023-06-01")
+	executions := strings.ReplaceAll(activityBuy+activitySale, ",Order,", ",Trade,")
+	secondSale := strings.Replace(activitySale, "10:00:00", "11:00:00", 1)
+	for name, test := range map[string]struct {
+		data    string
+		lots    int
+		invalid bool
+	}{
+		"lots after an order":        {activityBuy + activitySale + lot("2023-06-01", "60", "40") + lot("2024-01-01", "40", "-2"), 2, false},
+		"lots moved from executions": {activityBuy + activitySale + executions + lot("2023-06-01", "100", "98"), 1, false},
+		"unreadable lot date":        {activityBuy + activitySale + lot("June 1", "100", "98"), 0, true},
+		"two same-day orders":        {activityBuy + activityBuy + activitySale + secondSale + strings.ReplaceAll(activityBuy+activityBuy+activitySale+secondSale, ",Order,", ",Trade,") + lot("2023-06-01", "100", "98"), 0, true},
+		"no lots":                    {activityBuy + activitySale, 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := ParseActivityReportReader(strings.NewReader(activityHeader + test.data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, trade := range r.Trades {
+				if !trade.IsSale {
+					continue
+				}
+				if len(trade.ClosedLots) != test.lots || trade.closedLotsInvalid != test.invalid {
+					t.Fatalf("%+v", trade)
+				}
+				if test.lots > 0 && (trade.ClosedLots[0].Quantity != map[int]float64{1: 100, 2: 60}[test.lots] || !trade.ClosedLots[0].Acquired.Equal(acquired)) {
+					t.Fatalf("lot %+v", trade.ClosedLots[0])
+				}
+			}
+		})
+	}
+}
+
+func TestOpeningPositionRequiresReconciledSummary(t *testing.T) {
+	const mtm = "Mark-to-Market Performance Summary,Header,Asset Category,Symbol,Prior Quantity,Current Quantity,Mark-to-Market P/L Total\n"
+	for _, test := range []struct {
+		current string
+		opening float64
+	}{
+		{"100", 100}, // 100 held + 100 bought - 100 sold reconciles
+		{"150", 0},   // does not reconcile: unknown transfers or trades
+	} {
+		data := mtm + "Mark-to-Market Performance Summary,Data,Stocks,XYZ,100," + test.current + ",0\n" + activityHeader + activityBuy + activitySale
+		r, err := ParseActivityReportReader(strings.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.OpeningPositions[tradeInventoryKey(r.Trades[0])]; got != test.opening {
+			t.Fatalf("current %s: opening %g", test.current, got)
+		}
+	}
+}
+
+func TestLosingClosedLotDoesNotLeakAcrossSameDaySales(t *testing.T) {
+	buy1 := "Trades,Data,Order,Stocks,USD,XYZ,\"2023-06-01, 10:00:00\",100,10,10,-1000,0,1000,0,0,O\n"
+	buy2 := "Trades,Data,Order,Stocks,USD,XYZ,\"2023-07-01, 10:00:00\",100,15,15,-1500,0,1500,0,0,O\n"
+	repurchase := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-05, 10:00:00\",100,14,14,-1400,0,1400,0,0,O\n"
+	profitSale := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 10:00:00\",-100,15,15,1500,0,-1000,500,0,C\n"
+	profitLot := "Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-06-01,100,,,,,1000,500,,\n"
+	lossSale := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 11:00:00\",-100,14.5,14.5,1450,0,-1500,-50,0,C;LD\n"
+	lossLot := "Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-07-01,100,,,,,1500,-50,,\n"
+	shortOpen := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 12:00:00\",-100,14.5,14.5,1450,0,0,0,0,O\n"
+
+	r, err := ParseActivityReportReader(strings.NewReader(
+		activityHeader + buy1 + buy2 + profitSale + profitLot + lossSale + lossLot + shortOpen + repurchase,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sales []Trade
+	for _, tr := range r.Trades {
+		if tr.IsSale {
+			sales = append(sales, tr)
+		}
+	}
+	if len(sales) != 3 {
+		t.Fatalf("expected 3 sales, got %d", len(sales))
+	}
+	if sales[0].HasLossLot || sales[0].IsLossSale() {
+		t.Fatalf("profitable sale inherited HasLossLot: %+v", sales[0])
+	}
+	if !sales[1].HasLossLot || !sales[1].IsLossSale() {
+		t.Fatalf("losing sale missing HasLossLot: %+v", sales[1])
+	}
+	if sales[2].HasLossLot || sales[2].IsLossSale() {
+		t.Fatalf("short opening inherited HasLossLot: %+v", sales[2])
+	}
+
+	// Profitable sale must not steal replacement shares from the same-day loss sale.
+	analysis := r.AnalyzeTrades("XYZ")
+	if len(analysis.WashSaleChecks) != 1 || analysis.WashSaleChecks[0].MatchedQuantity != 100 || len(analysis.SuspiciousTrades) != 0 {
+		t.Fatalf("unexpected wash-sale checks: checks=%+v suspicious=%+v", analysis.WashSaleChecks, analysis.SuspiciousTrades)
+	}
+}
+
+func TestDroppedExecutionLossLotTransferAcrossSameDayOrders(t *testing.T) {
+	profitOrder := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 10:00:00\",-100,15,15,1500,0,-1000,500,0,C\n"
+	lossOrder := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 11:00:00\",-100,14.5,14.5,1450,0,-1500,-50,0,C\n"
+	secondProfitOrder := "Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-01, 11:00:00\",-100,15,15,1500,0,-1000,500,0,C\n"
+	lossLot := "Trades,Data,ClosedLot,Stocks,USD,XYZ,2023-07-01,100,,,,,1500,-50,,\n"
+
+	// Case 1: one order is already a loss sale, so the other profitable order must not be marked.
+	execs1 := strings.ReplaceAll(profitOrder+lossOrder, ",Order,", ",Trade,")
+	r, err := ParseActivityReportReader(strings.NewReader(activityHeader + profitOrder + lossOrder + execs1 + lossLot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Trades) != 2 || r.Trades[0].HasLossLot || r.Trades[0].IsLossSale() || !r.Trades[1].IsLossSale() {
+		t.Fatalf("case 1 trades: %+v", r.Trades)
+	}
+
+	// Case 2: both orders are net profitable, and a dropped execution had a losing lot;
+	// mark exactly one order so the day's window is preserved without duplicating rows.
+	execs2 := strings.ReplaceAll(profitOrder+secondProfitOrder, ",Order,", ",Trade,")
+	r, err = ParseActivityReportReader(strings.NewReader(activityHeader + profitOrder + secondProfitOrder + execs2 + lossLot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lossCount := 0
+	for _, tr := range r.Trades {
+		if tr.IsLossSale() {
+			lossCount++
+		}
+	}
+	if len(r.Trades) != 2 || lossCount != 1 {
+		t.Fatalf("case 2 expected 1 loss sale out of 2, got %d: %+v", lossCount, r.Trades)
+	}
+}

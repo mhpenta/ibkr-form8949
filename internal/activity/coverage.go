@@ -34,18 +34,58 @@ func parsePeriod(period string) (time.Time, time.Time) {
 	return start, end
 }
 
+// DateRange is an inclusive range of calendar days.
+type DateRange struct {
+	Start, End time.Time
+}
+
+func (d DateRange) String() string {
+	return d.Start.Format(time.DateOnly) + " through " + d.End.Format(time.DateOnly)
+}
+
+// coverage is the list of date ranges the supplied statements cover, in order.
+// Combined statements can leave gaps between ranges.
+func (r *ActivityReport) coverage() []DateRange {
+	if len(r.Coverage) > 0 {
+		return r.Coverage
+	}
+	if r.PeriodStart.IsZero() || r.PeriodEnd.IsZero() {
+		return nil
+	}
+	return []DateRange{{r.PeriodStart, r.PeriodEnd}}
+}
+
+// Gaps lists the days between the first and last statement dates that no statement covers.
+func (r *ActivityReport) Gaps() []DateRange {
+	return gapsBetween(r.coverage())
+}
+
 // CoversDates describes statement coverage, not completeness across accounts.
+// The whole range must fall inside one covered range: a gap breaks coverage.
 func (r *ActivityReport) CoversDates(start, end time.Time) bool {
-	return !r.PeriodStart.IsZero() && !r.PeriodEnd.IsZero() &&
-		!washsale.Day(start).Before(r.PeriodStart) && !washsale.Day(end).After(r.PeriodEnd)
+	start, end = washsale.Day(start), washsale.Day(end)
+	for _, covered := range r.coverage() {
+		if !start.Before(covered.Start) && !end.After(covered.End) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ActivityReport) PrintCoverage(asOf time.Time) {
-	if r.PeriodStart.IsZero() || r.PeriodEnd.IsZero() {
+	ranges := r.coverage()
+	if len(ranges) == 0 {
 		fmt.Println("Statement coverage is unknown; absence of trades cannot establish a clear wash-sale window.")
 		return
 	}
-	fmt.Printf("Statement coverage: %s through %s\n", r.PeriodStart.Format(time.DateOnly), r.PeriodEnd.Format(time.DateOnly))
+	parts := make([]string, len(ranges))
+	for i, covered := range ranges {
+		parts[i] = covered.String()
+	}
+	fmt.Printf("Statement coverage: %s\n", strings.Join(parts, "; "))
+	for _, gap := range r.Gaps() {
+		fmt.Printf("No statement covers %s; trades in that gap are unknown.\n", gap)
+	}
 	if !r.CoversDates(asOf, asOf) {
 		fmt.Println("The comparison date is outside statement coverage; newer or earlier trades are unknown.")
 	}
@@ -65,10 +105,16 @@ func (r *ActivityReport) PrintWindowCoverage(asOf time.Time) {
 		fmt.Printf("The statement starts on %s; loss sales from %s through %s are not included and could still have open windows.\n",
 			r.PeriodStart.Format(time.DateOnly), lookback.Format(time.DateOnly), r.PeriodStart.AddDate(0, 0, -1).Format(time.DateOnly))
 	}
+	for _, gap := range r.Gaps() {
+		if !gap.End.Before(lookback) && !gap.Start.After(day) {
+			fmt.Printf("Loss sales from %s are not in any statement and could still have open windows.\n", gap)
+		}
+	}
 }
 
 // A reconciled broker snapshot can establish a flat position after a trade.
-// An opening quantity alone is not a dated acquisition or a tax lot.
+// An opening quantity alone is not a dated acquisition or a tax lot; it is
+// recorded only as undated inventory for the order in which sales take shares.
 func markKnownFlatPositions(r *ActivityReport) {
 	bySymbol := make(map[string][]int)
 	for i, t := range r.Trades {
@@ -94,6 +140,14 @@ func markKnownFlatPositions(r *ActivityReport) {
 		}
 		if !valid || math.Abs(balance-row.CurrentQuantity) > quantityEpsilon {
 			continue
+		}
+		// The reconciled opening quantity is undated inventory: it fixes which
+		// shares a sale takes first, but is never a replacement purchase.
+		if row.PriorQuantity > quantityEpsilon {
+			if r.OpeningPositions == nil {
+				r.OpeningPositions = make(map[string]float64)
+			}
+			r.OpeningPositions[key] = row.PriorQuantity
 		}
 		sort.SliceStable(indices, func(i, j int) bool { return r.Trades[indices[i]].DateTime.Before(r.Trades[indices[j]].DateTime) })
 		// A date-only row can move across any timed trade on that day. Avoid

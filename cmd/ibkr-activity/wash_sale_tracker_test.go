@@ -17,7 +17,7 @@ Trades,Data,Order,Stocks,USD,AMZN,2026-10-22,-20,181,181,3620,0,-3650,-30,0,C
 Trades,Data,Order,Stocks,USD,NVDA,2026-10-07,-100,125.5,125.5,12550,0,-13000,-450,0,C
 `
 	path := writeActivity(t, data)
-	out, err := captureStdout(func() error { return AnalyzeWashSalePeriods(path) })
+	out, err := captureStdout(func() error { return AnalyzeWashSalePeriods([]string{path}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,5 +72,149 @@ func TestCalendarLinkUsesExclusiveNextDay(t *testing.T) {
 	}
 	if !strings.Contains(link.Query().Get("text"), "XYZ & A") {
 		t.Fatal("symbol lost in URL encoding")
+	}
+}
+
+func TestShortCoverLossesReportedSeparatelyAndExcludedFromSafe(t *testing.T) {
+	data := "Statement,Data,WhenGenerated,\"2024-02-10, 12:00:00 EST\"\n" +
+		commandHeader +
+		"Trades,Data,Order,Stocks,USD,SHRT,\"2024-02-01, 10:00:00\",100,5,5,-500,-1,400,-101,0,C\n" +
+		"Trades,Data,Order,Stocks,USD,SHRTLD,\"2024-02-02, 10:00:00\",50,10,10,-500,0,500,0,0,C;LD\n" +
+		"Trades,Data,Order,Stocks,USD,LONG,\"2024-02-03, 10:00:00\",-100,9,9,900,0,-950,-50,0,C\n" +
+		"Trades,Data,Order,Stocks,USD,SAFE,\"2024-02-04, 10:00:00\",100,10,10,-1000,0,1000,0,0,O\n"
+
+	path := writeActivity(t, data)
+	periodsOut, err := captureStdout(func() error { return AnalyzeWashSalePeriods([]string{path}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"=== SHORT-COVER LOSSES REQUIRING SEPARATE REVIEW ===",
+		"SHRT | 02/01/2024 | $-101.00 | 100 | $5.00",
+		"SHRTLD | 02/02/2024 | $0.00 | 50 | $10.00",
+		"• SAFE - No active window found in supplied trades",
+	} {
+		if !strings.Contains(periodsOut, want) {
+			t.Fatalf("wash-sale-periods missing %q:\n%s", want, periodsOut)
+		}
+	}
+	for _, forbidden := range []string{"• SHRT ", "• SHRTLD "} {
+		if strings.Contains(periodsOut, forbidden) {
+			t.Fatalf("short-cover loss listed as no active window (%q):\n%s", forbidden, periodsOut)
+		}
+	}
+
+	report, err := activity.ParseActivityReportReader(strings.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asOf, _ := time.Parse(time.DateOnly, "2024-02-10")
+	safeOut, err := captureStdout(func() error { return printSafeRepurchaseDates(report, asOf, true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"=== SHORT-COVER LOSSES REQUIRING SEPARATE REVIEW ===",
+		"SHRT | 02/01/2024 | $-101.00",
+		"SHRTLD | 02/02/2024 | $0.00",
+		"• SAFE - No active window found in supplied trades",
+	} {
+		if !strings.Contains(safeOut, want) {
+			t.Fatalf("safe-repurchase missing %q:\n%s", want, safeOut)
+		}
+	}
+	for _, forbidden := range []string{"• SHRT ", "• SHRTLD ", "Review+Repurchase+Window%3A+SHRT"} {
+		if strings.Contains(safeOut, forbidden) {
+			t.Fatalf("short-cover loss leaked into safe section/calendar (%q):\n%s", forbidden, safeOut)
+		}
+	}
+
+	// Statement with ONLY a short-cover loss must not return early with "No active loss-sale windows found".
+	shortOnly := "Statement,Data,WhenGenerated,\"2024-02-10, 12:00:00 EST\"\n" +
+		commandHeader +
+		"Trades,Data,Order,Stocks,USD,SHRT,\"2024-02-01, 10:00:00\",100,5,5,-500,-1,400,-101,0,C\n"
+	shortOnlyReport, err := activity.ParseActivityReportReader(strings.NewReader(shortOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortOnlyOut, err := captureStdout(func() error { return printSafeRepurchaseDates(shortOnlyReport, asOf, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(shortOnlyOut, "=== SHORT-COVER LOSSES REQUIRING SEPARATE REVIEW ===") || !strings.Contains(shortOnlyOut, "SHRT | 02/01/2024 | $-101.00") {
+		t.Fatalf("short-only report hid short-cover loss:\n%s", shortOnlyOut)
+	}
+}
+
+func TestSafeRepurchaseTimezoneDay30Day0AndFutureTrade(t *testing.T) {
+	// 1) User in Tokyo (UTC+9) during US market hours on Day 30 (2024-02-01 01:00 JST == 2024-01-31 11:00 EST).
+	jst := time.FixedZone("JST", 9*3600)
+	estDay30CSV := "Statement,Data,WhenGenerated,\"2024-01-31, 10:00:00 EST\"\n" +
+		commandHeader +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-01-01, 15:30:00\",-100,9,9,900,0,-1000,-100,0,C\n"
+	report, err := activity.ParseActivityReportReader(strings.NewReader(estDay30CSV))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokyoDay30 := time.Date(2024, 2, 1, 1, 0, 0, 0, jst) // 2024-01-31 11:00 EST (Day 30)
+	out, err := captureStdout(func() error { return printSafeRepurchaseDatesAt(report, tokyoDay30, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "As of: January 31, 2024 (EST)") || !strings.Contains(out, "XYZ | $-100.00 | 02/01/2024 | 1 days") {
+		t.Fatalf("expected active Day 30 window in EST when invoked from JST:\n%s", out)
+	}
+
+	tokyoDay31 := time.Date(2024, 2, 1, 14, 0, 0, 0, jst) // 2024-02-01 00:00 EST (Day 31)
+	out, err = captureStdout(func() error { return printSafeRepurchaseDatesAt(report, tokyoDay31, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "No active loss-sale windows found") {
+		t.Fatalf("expected Day 31 in EST to clear window:\n%s", out)
+	}
+
+	// 2) User in US Pacific (UTC-8) after midnight EST on Day 0 (2024-02-01 21:45 PST == 2024-02-02 00:45 EST).
+	pst := time.FixedZone("PST", -8*3600)
+	estDay0CSV := "Statement,Data,WhenGenerated,\"2024-02-02, 00:30:00 EST\"\n" +
+		commandHeader +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-02, 00:15:00\",-100,9,9,900,0,-1000,-100,0,C\n"
+	day0Report, err := activity.ParseActivityReportReader(strings.NewReader(estDay0CSV))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pacificDay0 := time.Date(2024, 2, 1, 21, 45, 0, 0, pst) // 2024-02-02 00:45 EST
+	out, err = captureStdout(func() error { return printSafeRepurchaseDatesAt(day0Report, pacificDay0, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "As of: February 2, 2024 (EST)") || !strings.Contains(out, "XYZ | $-100.00 | 03/04/2024 | 31 days") {
+		t.Fatalf("expected active Day 0 window in EST when invoked from PST:\n%s", out)
+	}
+
+	// 3) Statement without WhenGenerated containing a trade dated after comparisonDate must warn and not mark symbol safe.
+	noGenCSV := commandHeader +
+		"Trades,Data,Order,Stocks,USD,XYZ,\"2024-02-02, 00:15:00\",-100,9,9,900,0,-1000,-100,0,C\n" +
+		"Trades,Data,Order,Stocks,USD,SAFE,\"2024-01-15, 10:00:00\",100,10,10,-1000,0,1000,0,0,O\n"
+	noGenReport, err := activity.ParseActivityReportReader(strings.NewReader(noGenCSV))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = captureStdout(func() error { return printSafeRepurchaseDatesAt(noGenReport, pacificDay0, false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"=== LOSS TRADES DATED AFTER AS-OF DATE ===",
+		"XYZ | 02/02/2024 | Loss sale | $-100.00",
+		"• SAFE - No active window found in supplied trades",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing future-trade warning %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "• XYZ ") {
+		t.Fatalf("future-dated loss sale must not be listed as no active window:\n%s", out)
 	}
 }

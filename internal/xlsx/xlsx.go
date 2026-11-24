@@ -1,8 +1,8 @@
 // Package xlsx writes small Office Open XML workbooks using only the standard library.
 //
-// It supports exactly what the reports need: several sheets, text and numeric cells,
-// a bold header row that stays frozen with a filter, a few number formats, and column
-// widths. The files open in Excel, Google Sheets, Numbers and LibreOffice.
+// It supports exactly what the reports need: several sheets, text, numeric and date
+// cells, a bold header row that stays frozen with a filter, a few number formats, and
+// column widths. The files open in Excel, Google Sheets, Numbers and LibreOffice.
 package xlsx
 
 import (
@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Style selects a cell's formatting. The values index cellXfs in styles.xml.
@@ -22,10 +23,13 @@ type Style int
 const (
 	StyleDefault Style = iota
 	StyleBold
-	StyleMoney   // #,##0.00 with negatives in red
-	StyleInteger // #,##0
-	StylePercent // 0.0%
-	StyleTitle   // bold, larger
+	StyleMoney    // #,##0.00 with negatives in red
+	StyleInteger  // #,##0
+	StylePercent  // 0.0%
+	StyleTitle    // bold, larger
+	StylePrice    // #,##0.00## for per-share prices
+	StyleDate     // yyyy-mm-dd
+	StyleDateTime // yyyy-mm-dd hh:mm:ss
 )
 
 // Cell is one spreadsheet cell: text, a number, or empty.
@@ -57,6 +61,28 @@ func Int(v int) Cell { return Cell{number: float64(v), numeric: true, style: Sty
 // Percent returns a numeric cell for a fraction (0.25 shows as 25.0%).
 func Percent(fraction float64) Cell {
 	return Cell{number: fraction, numeric: true, style: StylePercent}
+}
+
+// Price returns a numeric cell with two to four decimals, for per-share prices.
+func Price(v float64) Cell { return Cell{number: v, numeric: true, style: StylePrice} }
+
+// excelEpoch is day zero of spreadsheet date serial numbers (the 1900 date system).
+var excelEpoch = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
+
+// dateSerial converts t's calendar date and clock time, ignoring its zone, to a serial number.
+func dateSerial(t time.Time) float64 {
+	wall := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.UTC)
+	return wall.Sub(excelEpoch).Hours() / 24
+}
+
+// Date returns a real date cell (yyyy-mm-dd) that sorts and charts as a date.
+func Date(t time.Time) Cell {
+	return Cell{number: math.Floor(dateSerial(t)), numeric: true, style: StyleDate}
+}
+
+// DateTime returns a real date-and-time cell (yyyy-mm-dd hh:mm:ss).
+func DateTime(t time.Time) Cell {
+	return Cell{number: dateSerial(t), numeric: true, style: StyleDateTime}
 }
 
 // Empty returns a blank cell.
@@ -377,9 +403,12 @@ const rootRels = xmlHeader + `<Relationships xmlns="http://schemas.openxmlformat
 
 // styles defines cellXfs in the same order as the Style constants.
 const styles = xmlHeader + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">` +
-	`<numFmts count="2">` +
+	`<numFmts count="5">` +
 	`<numFmt numFmtId="164" formatCode="#,##0.00;[Red]-#,##0.00"/>` +
 	`<numFmt numFmtId="165" formatCode="0.0%"/>` +
+	`<numFmt numFmtId="166" formatCode="#,##0.00##"/>` +
+	`<numFmt numFmtId="167" formatCode="yyyy-mm-dd"/>` +
+	`<numFmt numFmtId="168" formatCode="yyyy-mm-dd hh:mm:ss"/>` +
 	`</numFmts>` +
 	`<fonts count="3">` +
 	`<font><sz val="11"/><name val="Calibri"/><family val="2"/></font>` +
@@ -389,13 +418,16 @@ const styles = xmlHeader + `<styleSheet xmlns="http://schemas.openxmlformats.org
 	`<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
 	`<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
 	`<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-	`<cellXfs count="6">` +
+	`<cellXfs count="9">` +
 	`<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
 	`<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
 	`<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
 	`<xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
 	`<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
 	`<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>` +
+	`<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+	`<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
+	`<xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>` +
 	`</cellXfs>` +
 	`<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>` +
 	`</styleSheet>`

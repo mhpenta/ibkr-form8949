@@ -23,11 +23,23 @@ type WashSaleAnalysis struct {
 	NearestRepurchase *Trade
 	DaysDifference    int
 	MatchedQuantity   float64
+	LotMethod         LotMethod // How the sale took shares; empty for short openings
 	Reason            string
 }
 
-// AnalyzeSymbol performs a detailed analysis of trades for a single symbol
+// AnalyzeTrades analyzes one symbol's trades, including the statement's
+// reconciled opening positions in each sale's lot order.
+func (r *ActivityReport) AnalyzeTrades(symbol string) SymbolAnalysis {
+	return analyzeSymbol(r.TradesBySymbol[symbol], r.OpeningPositions)
+}
+
+// AnalyzeSymbol performs a detailed analysis of trades for a single symbol,
+// without opening positions.
 func AnalyzeSymbol(trades []Trade) SymbolAnalysis {
+	return analyzeSymbol(trades, nil)
+}
+
+func analyzeSymbol(trades []Trade, opening map[string]float64) SymbolAnalysis {
 	analysis := SymbolAnalysis{
 		AllTrades: trades,
 	}
@@ -66,7 +78,7 @@ func AnalyzeSymbol(trades []Trade) SymbolAnalysis {
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].DateTime.Before(ordered[j].DateTime)
 	})
-	checks := inspectReplacementLots(ordered)
+	checks := inspectReplacementLots(ordered, opening)
 	for i, sale := range ordered {
 		if !sale.IsWashSale {
 			continue
@@ -90,11 +102,11 @@ func PrintSymbolAnalysis(analysis SymbolAnalysis) {
 		len(analysis.AllTrades), len(analysis.BuyTrades), len(analysis.SellTrades))
 	fmt.Printf("Wash Sales: %d\n", len(analysis.WashSales))
 	fmt.Printf("Wash-Sale Adjustments Requiring Review: %d\n\n", len(analysis.SuspiciousTrades))
-	fmt.Println("Replacement matching uses FIFO on supplied trades; reported P/L includes disallowed losses.")
+	fmt.Println("Replacement matching follows each sale's lot method on supplied trades; reported P/L includes disallowed losses.")
 
 	if len(analysis.SuspiciousTrades) > 0 {
 		fmt.Println("SUSPICIOUS WASH SALE DETAILS:")
-		fmt.Println("Date | Quantity | Price | Proceeds | Basis | P/L | Nearest Repurchase | Days Diff | Reason")
+		fmt.Println("Date | Quantity | Price | Proceeds | Basis | P/L | Nearest Repurchase | Days Diff | Lot Method | Reason")
 		fmt.Println("----------------------------------------------------------------------------")
 
 		for _, suspicious := range analysis.SuspiciousTrades {
@@ -108,7 +120,7 @@ func PrintSymbolAnalysis(analysis SymbolAnalysis) {
 					nearestBuy.TradePrice)
 			}
 
-			fmt.Printf("%s | %.0f | $%.2f | $%.2f | $%.2f | $%.2f | %s | %d days | %s\n",
+			fmt.Printf("%s | %.0f | $%.2f | $%.2f | $%.2f | $%.2f | %s | %d days | %s | %s\n",
 				sale.DateTime.Format("01/02/2006"),
 				math.Abs(sale.Quantity),
 				sale.TradePrice,
@@ -117,6 +129,7 @@ func PrintSymbolAnalysis(analysis SymbolAnalysis) {
 				sale.RealizedPL,
 				nearestInfo,
 				suspicious.DaysDifference,
+				lotMethodLabel(suspicious.LotMethod),
 				suspicious.Reason)
 		}
 
@@ -150,7 +163,7 @@ func PrintSymbolAnalysis(analysis SymbolAnalysis) {
 				washSaleInfo)
 		}
 	} else if len(analysis.WashSales) > 0 {
-		fmt.Println("Candidate replacement quantities were found using FIFO on the supplied trades.")
+		fmt.Println("Candidate replacement quantities were found using each sale's lot method on the supplied trades.")
 		fmt.Println("The broker's disallowed amounts still require closed-lot details to validate.")
 	}
 }
@@ -163,8 +176,8 @@ func PrintWashSaleReport(report *ActivityReport) {
 		Analysis WashSaleAnalysis
 	}{}
 
-	for symbol, trades := range report.TradesBySymbol {
-		analysis := AnalyzeSymbol(trades)
+	for symbol := range report.TradesBySymbol {
+		analysis := report.AnalyzeTrades(symbol)
 		for _, suspicious := range analysis.SuspiciousTrades {
 			allSuspicious = append(allSuspicious, struct {
 				Symbol   string
@@ -200,7 +213,7 @@ func PrintWashSaleReport(report *ActivityReport) {
 
 	if len(allSuspicious) > 0 {
 		fmt.Println("TOP SUSPICIOUS WASH SALES (By Loss Amount):")
-		fmt.Println("Symbol | Date | Quantity | Price | P/L | Nearest Repurchase | Days Diff | Reason")
+		fmt.Println("Symbol | Date | Quantity | Price | P/L | Nearest Repurchase | Days Diff | Lot Method | Reason")
 		fmt.Println("-----------------------------------------------------------------------------------")
 
 		for _, item := range allSuspicious {
@@ -214,7 +227,7 @@ func PrintWashSaleReport(report *ActivityReport) {
 					nearestBuy.TradePrice)
 			}
 
-			fmt.Printf("%s | %s | %.0f | $%.2f | $%.2f | %s | %d days | %s\n",
+			fmt.Printf("%s | %s | %.0f | $%.2f | $%.2f | %s | %d days | %s | %s\n",
 				item.Symbol,
 				sale.DateTime.Format("01/02/2006"),
 				math.Abs(sale.Quantity),
@@ -222,6 +235,7 @@ func PrintWashSaleReport(report *ActivityReport) {
 				sale.RealizedPL,
 				nearestInfo,
 				item.Analysis.DaysDifference,
+				lotMethodLabel(item.Analysis.LotMethod),
 				item.Analysis.Reason)
 		}
 
@@ -256,6 +270,14 @@ func PrintWashSaleReport(report *ActivityReport) {
 
 	fmt.Println("\nNOTE: This analysis is based on the activity report provided and may not include")
 	fmt.Println("trades from other accounts or periods that could affect wash sale determination.")
-	fmt.Println("Replacement quantities use FIFO; supply broker closed-lot details for other tax-lot elections.")
+	fmt.Println("Replacement quantities follow each sale's IBKR lot election (FIFO, LIFO, highest cost) or exported")
+	fmt.Println("closed-lot rows; specific-lot and maximize/minimize elections need closed-lot rows.")
 	fmt.Println("Reported P/L includes disallowed losses; a zero amount is not evidence of an invalid wash sale.")
+}
+
+func lotMethodLabel(method LotMethod) string {
+	if method == "" {
+		return "--"
+	}
+	return string(method)
 }

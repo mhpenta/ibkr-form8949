@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,11 +13,13 @@ import (
 )
 
 func AnalyzeSymbolPosition(path, symbol string) error {
-	return analyzeSymbolPosition(path, symbol, false)
+	return analyzeSymbolPosition([]string{path}, symbol, false, "")
 }
 
-func analyzeSymbolPosition(path, symbol string, printAll bool) error {
-	report, err := activity.ParseActivityReport(path)
+// analyzeSymbolPosition prints one stock's trades, prices and holdings. With
+// printAll it lists every trade; with xlsxPath it also writes a workbook.
+func analyzeSymbolPosition(files []string, symbol string, printAll bool, xlsxPath string) error {
+	report, err := loadStatements(files)
 	if err != nil {
 		return err
 	}
@@ -40,14 +44,23 @@ func analyzeSymbolPosition(path, symbol string, printAll bool) error {
 	if len(currencies) > 1 {
 		return fmt.Errorf("symbol %s has multiple trading currencies; a combined monetary position total is undefined", symbol)
 	}
+	currency := formatCurrencySet(currencies)
+	if len(trades) == 0 {
+		currency = normalizeCurrency(report.BaseCurrency)
+	}
+	snapshot := snapshotTotals(snapshots)
+	view := positionView{
+		symbol: symbol, currency: currency, report: report, trades: trades, snapshot: snapshot,
+		stats:    activity.AnalyzePosition(trades, snapshot.opening()),
+		analysis: report.AnalyzeTrades(symbol),
+	}
 	fmt.Printf("\n=== %s POSITION SUMMARY ===\n\n", symbol)
 	if len(trades) == 0 {
 		fmt.Println("No stock transactions found in the supplied statement.")
 		printStockPositionSnapshot(snapshots)
-		return nil
+		return writePositionWorkbookIfRequested(xlsxPath, view)
 	}
 
-	currency := formatCurrencySet(currencies)
 	sort.SliceStable(trades, func(i, j int) bool { return trades[i].DateTime.Before(trades[j].DateTime) })
 	var quantity, volume, commission, pl float64
 	buys, sells := 0, 0
@@ -96,9 +109,10 @@ func analyzeSymbolPosition(path, symbol string, printAll bool) error {
 		average = pl / volume
 	}
 	fmt.Printf("Average P/L per Share: %s\n", formatBaseCurrency(average, currency))
+	printPriceSummary(view)
 	if printAll {
 		fmt.Println("\nALL TRANSACTIONS:")
-		printPositionTrades(trades, currency)
+		printPositionTimeline(view.stats.Steps, currency)
 	}
 	if !lastSale.IsZero() {
 		printTradesAfterLastSale(trades, lastSale, lastDateOnlySale, currency)
@@ -133,7 +147,155 @@ func analyzeSymbolPosition(path, symbol string, printAll bool) error {
 		fmt.Println("No net loss, LD-coded transaction or losing closed lot found in supplied trades; without closed-lot rows, individual loss lots may be hidden by order totals.")
 	}
 	activity.PrintWashSaleScope()
+	return writePositionWorkbookIfRequested(xlsxPath, view)
+}
+
+// positionSnapshot totals a symbol's Mark-to-Market quantities across rows.
+type positionSnapshot struct {
+	prior, current           float64
+	priorKnown, currentKnown bool
+}
+
+func snapshotTotals(rows []activity.MarkToMarketPerformance) positionSnapshot {
+	s := positionSnapshot{priorKnown: len(rows) > 0, currentKnown: len(rows) > 0}
+	for _, row := range rows {
+		s.prior += row.PriorQuantity
+		s.current += row.CurrentQuantity
+		s.priorKnown = s.priorKnown && !row.PriorQuantityMissing
+		s.currentKnown = s.currentKnown && !row.CurrentQuantityMissing
+	}
+	return s
+}
+
+// opening is the quantity held before the first trade, or 0 when unknown.
+func (s positionSnapshot) opening() float64 {
+	if s.priorKnown {
+		return s.prior
+	}
+	return 0
+}
+
+// reconciles reports whether prior quantity plus trades equals the ending quantity.
+// ok is false when either broker quantity is unavailable.
+func (s positionSnapshot) reconciles(netTraded float64) (matches, ok bool) {
+	if !s.priorKnown || !s.currentKnown {
+		return false, false
+	}
+	return math.Abs(s.prior+netTraded-s.current) <= 1e-6, true
+}
+
+// positionView is everything the position report and workbook show.
+type positionView struct {
+	symbol, currency string
+	report           *activity.ActivityReport
+	trades           []activity.Trade
+	snapshot         positionSnapshot
+	stats            activity.PositionStats
+	analysis         activity.SymbolAnalysis
+}
+
+func (v positionView) netTraded() float64 {
+	return v.stats.Buys.Shares - v.stats.Sells.Shares
+}
+
+func writePositionWorkbookIfRequested(path string, view positionView) error {
+	if path == "" {
+		return nil
+	}
+	if err := writePositionWorkbook(path, view); err != nil {
+		return fmt.Errorf("write spreadsheet: %w", err)
+	}
+	fmt.Printf("\nSpreadsheet written to %s\n", path)
 	return nil
+}
+
+func printPriceSummary(v positionView) {
+	s, c := v.stats, v.currency
+	fmt.Printf("\nBUYS AND SELLS (%s, averages weighted by shares):\n", c)
+	printSide("Buy", s.Buys, c)
+	printSide("Sell", s.Sells, c)
+	if s.SoldShares > 0 {
+		fmt.Printf("Average IBKR Cost of Shares Sold: %s over %g shares (broker basis, including shares bought before this statement)\n",
+			formatPrice(s.AverageSoldCost(), c), s.SoldShares)
+	}
+	if s.HasShortActivity() {
+		fmt.Println("Short activity (from IBKR O/C codes):")
+		for _, action := range activity.TradeActions {
+			if side := s.Actions[action]; side.Trades > 0 {
+				fmt.Printf("  %s: %s average over %g shares in %d %s\n", action, formatPrice(side.AveragePrice(), c), side.Shares, side.Trades, plural(side.Trades, "trade"))
+			}
+		}
+	}
+	if !v.snapshot.priorKnown {
+		fmt.Println("Opening quantity unavailable: open-share figures assume no shares were held before the first trade.")
+	}
+	if matches, ok := v.snapshot.reconciles(v.netTraded()); ok && !matches {
+		fmt.Printf("Trades do not reconcile with IBKR quantities (prior %g + traded %g, ending %g): splits, transfers or other corporate actions may be missing, so open-share figures can be wrong.\n",
+			v.snapshot.prior, v.netTraded(), v.snapshot.current)
+	}
+	final := s.Final(v.snapshot.opening())
+	switch {
+	case math.Abs(final.Position) <= 1e-9:
+	case final.OpenPriceKnown:
+		side := "long"
+		if final.Position < 0 {
+			side = "short"
+		}
+		fmt.Printf("Average Price of Open Shares: %s on %g %s shares (average-cost method, before commissions; not IBKR tax basis)\n",
+			formatPrice(final.OpenPrice, c), math.Abs(final.Position), side)
+	default:
+		fmt.Println("Average Price of Open Shares: unknown, because shares held before the first trade are still open.")
+	}
+}
+
+func printSide(label string, side activity.SideStats, currency string) {
+	if side.Trades == 0 {
+		fmt.Printf("%ss: none\n", label)
+		return
+	}
+	fmt.Printf("Average %s Price: %s (%s with commissions) over %g shares in %d %s\n", label,
+		formatPrice(side.AveragePrice(), currency), formatPrice(side.AverageNetPrice(), currency), side.Shares, side.Trades, plural(side.Trades, "trade"))
+	fmt.Printf("%s Price Range: %s low, %s median, %s high\n", label,
+		formatPrice(side.LowPrice, currency), formatPrice(side.MedianPrice, currency), formatPrice(side.HighPrice, currency))
+	fmt.Printf("%s Trade Size: %g smallest, %g median, %g largest\n", label, side.SmallestTrade, side.MedianTrade, side.LargestTrade)
+}
+
+func printPositionTimeline(steps []activity.PositionStep, currency string) {
+	fmt.Println("Date/Time | Action | Quantity | Price | Commission | Reported Realized P/L | Codes | Position After | Avg Open Price")
+	for _, step := range steps {
+		t := step.Trade
+		open := "--"
+		if step.OpenPriceKnown && step.Position != 0 {
+			open = formatPrice(step.OpenPrice, currency)
+		} else if step.OpenPriceKnown {
+			open = "flat"
+		}
+		fmt.Printf("%s | %s | %g | %s | %s | %s | %s | %g | %s\n", tradeTimestamp(t), step.Action, abs(t.Quantity),
+			formatPrice(t.TradePrice, currency), formatBaseCurrency(t.CommFee, currency), formatBaseCurrency(t.RealizedPL, currency),
+			t.Code, step.Position, open)
+	}
+}
+
+// formatPrice shows a per-share price with two to four decimals.
+func formatPrice(price float64, currency string) string {
+	s := strconv.FormatFloat(price, 'f', 4, 64)
+	for strings.HasSuffix(s, "0") && len(s)-strings.IndexByte(s, '.') > 3 {
+		s = s[:len(s)-1]
+	}
+	if currency == "" || currency == "USD" {
+		if strings.HasPrefix(s, "-") {
+			return "-$" + s[1:]
+		}
+		return "$" + s
+	}
+	return s + " " + currency
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 func printStockPositionSnapshot(rows []activity.MarkToMarketPerformance) {

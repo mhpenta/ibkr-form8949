@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mhpenta/ibkr-form8949/internal/washsale"
 )
 
 // ActivityReport represents a parsed IBKR Activity Report
@@ -25,13 +28,37 @@ type ActivityReport struct {
 	PeriodEnd                       time.Time
 	Warnings                        []string
 	StatementDate                   time.Time
+	StatementLocation               *time.Location
 	Today                           time.Time
 	AccountID                       string
 	BaseCurrency                    string
+	// OpeningPositions holds long quantities held before the first trade, keyed
+	// by inventory, where the broker's position summary reconciles all trades.
+	OpeningPositions map[string]float64
+	// Coverage lists the date ranges the statements cover. Empty means the single
+	// range PeriodStart through PeriodEnd, when those are known.
+	Coverage []DateRange
+	// Sources describes each statement file the report was read from.
+	Sources []StatementSource
+	// MarkToMarketPLUnavailable is set when combined statements overlap or not all
+	// have a Mark-to-Market summary, so per-period P/L cannot be added up. The
+	// summary rows then carry quantities only.
+	MarkToMarketPLUnavailable bool
+}
+
+// StatementSource is one statement file read into a report.
+type StatementSource struct {
+	Name       string // file name, without directories
+	Period     string
+	Start, End time.Time
+	Generated  time.Time
+	Trades     int // order or execution trades in the file
+	TradesUsed int // trades kept after combining overlapping statements
 }
 
 // Trade represents a single trade record from an IBKR activity report
 type Trade struct {
+	Source            string // statement file name; set when statements are loaded from files
 	Account           string
 	DateOnly          bool
 	PositionKnownFlat bool // Confirmed by reconciled broker position quantities
@@ -54,12 +81,41 @@ type Trade struct {
 	IsOption          bool
 	IsWashSale        bool
 	HasLossLot        bool // A closed-lot row for this sale reported a loss
+	HasShortLossLot   bool // A closed-lot row for this buy-to-cover reported a loss
+	// ClosedLots are the broker's closed-lot rows for this sale, when exported.
+	ClosedLots []ClosedLot
+	// closedLotsInvalid marks closed-lot rows that could not be read or assigned.
+	closedLotsInvalid bool
+}
+
+// ClosedLot is one broker closed-lot row: shares a sale took from one tax lot.
+type ClosedLot struct {
+	Acquired   time.Time // Calendar day the lot was acquired
+	Quantity   float64   // Shares taken from the lot, always positive
+	RealizedPL float64
 }
 
 // IsLossSale reports a sale that can start a wash-sale window: a net loss, an
 // LD-coded sale, or a net profitable sale whose closed-lot detail shows a losing lot.
 func (t Trade) IsLossSale() bool {
 	return t.IsSale && (t.RealizedPL < 0 || t.IsWashSale || t.HasLossLot)
+}
+
+// IsShortCoverLoss reports a buy-to-cover that closed a short position at a loss
+// or carries a wash-sale (LD) adjustment, which may trigger a short-sale wash window
+// under IRC §1091(e) and requires separate review of delivery and lot details.
+func (t Trade) IsShortCoverLoss() bool {
+	return t.IsBuy && (t.RealizedPL < 0 || t.IsWashSale || t.HasShortLossLot)
+}
+
+// AsOfInStatementZone converts a wall-clock instant into the statement's timezone
+// when known, so calendar-day comparisons match the statement's trade dates
+// regardless of the machine's local timezone.
+func (r *ActivityReport) AsOfInStatementZone(now time.Time) time.Time {
+	if r != nil && r.StatementLocation != nil {
+		return now.In(r.StatementLocation)
+	}
+	return now
 }
 
 // HasCode checks for a complete IBKR trade code in the semicolon-separated list.
@@ -128,6 +184,16 @@ type MarkToMarketPerformance struct {
 
 // ParseActivityReport parses an IBKR activity report CSV file
 func ParseActivityReport(filePath string) (*ActivityReport, error) {
+	report, err := parseActivityFile(filePath)
+	if err == nil {
+		for _, warning := range report.Warnings {
+			slog.Warn(warning)
+		}
+	}
+	return report, err
+}
+
+func parseActivityFile(filePath string) (*ActivityReport, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening file: %w", err)
@@ -135,12 +201,21 @@ func ParseActivityReport(filePath string) (*ActivityReport, error) {
 	defer file.Close()
 
 	report, err := ParseActivityReportReader(file)
-	if err == nil {
-		for _, warning := range report.Warnings {
-			slog.Warn(warning)
-		}
+	if err != nil {
+		return nil, err
 	}
-	return report, err
+	name := filepath.Base(filePath)
+	report.Sources[0].Name = name
+	for i := range report.Trades {
+		report.Trades[i].Source = name
+	}
+	for symbol, trades := range report.TradesBySymbol {
+		for i := range trades {
+			trades[i].Source = name
+		}
+		report.TradesBySymbol[symbol] = trades
+	}
+	return report, nil
 }
 
 // ParseActivityReportReader parses an IBKR activity report from a reader
@@ -169,6 +244,7 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 
 	report := &ActivityReport{
 		TradesBySymbol:                  make(map[string][]Trade),
+		OpeningPositions:                make(map[string]float64),
 		MarkToMarketPerformanceBySymbol: make(map[string][]MarkToMarketPerformance),
 	}
 
@@ -185,7 +261,7 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 
 		if record[0] == "Statement" && record[1] == "Data" && record[2] == "WhenGenerated" {
 			var err error
-			report.StatementDate, err = time.Parse("2006-01-02, 15:04:05 MST", record[3])
+			report.StatementDate, report.StatementLocation, err = parseStatementDate(record[3])
 			if err != nil {
 				return nil, fmt.Errorf("invalid statement generation date: %w", err)
 			}
@@ -220,17 +296,17 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 	}
 	var candidates []candidate
 	levels := make(map[string]map[string][]Trade)
-	// Closed-lot rows follow the sale they close. A losing lot inside a net
-	// profitable sale still starts a window, so remember its sale's key and day.
-	// The window depends only on the sale day, so same-day sales share the mark.
-	lossLotSales := make(map[string]bool)
+	// Closed-lot rows follow the closing trade they belong to. Attach each lot
+	// directly to its trade so a losing lot does not leak onto unrelated same-day trades.
 	lastSale := -1
+	lastCover := -1
 	for i, record := range records {
 		if len(record) < 2 || record[0] != "Trades" {
 			continue
 		}
 		if record[1] == "Header" {
 			lastSale = -1
+			lastCover = -1
 			header = record
 			if _, err := fieldIndexes(header); err != nil {
 				return nil, fmt.Errorf("line %d: %w", lines[i], err)
@@ -247,14 +323,29 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 		level := getField(record, fields, "DataDiscriminator")
 		if level == "ClosedLot" {
 			if lastSale >= 0 && strings.EqualFold(getField(record, fields, "Symbol"), candidates[lastSale].trade.Symbol) {
-				if pl, err := parseNumber(getField(record, fields, "Realized P/L")); err == nil && pl < 0 {
-					lossLotSales[lossLotKey(candidates[lastSale].trade)] = true
+				sale := &candidates[lastSale].trade
+				pl, plErr := parseNumber(getField(record, fields, "Realized P/L"))
+				if plErr == nil && pl < 0 {
+					sale.HasLossLot = true
+				}
+				acquired, dateErr := parseTradeDateTime(getField(record, fields, "Date/Time"))
+				quantity, quantityErr := parseNumber(getField(record, fields, "Quantity"))
+				if plErr != nil || dateErr != nil || quantityErr != nil || quantity == 0 {
+					sale.closedLotsInvalid = true
+				} else {
+					sale.ClosedLots = append(sale.ClosedLots, ClosedLot{Acquired: washsale.Day(acquired), Quantity: math.Abs(quantity), RealizedPL: pl})
+				}
+			} else if lastCover >= 0 && strings.EqualFold(getField(record, fields, "Symbol"), candidates[lastCover].trade.Symbol) {
+				pl, plErr := parseNumber(getField(record, fields, "Realized P/L"))
+				if plErr == nil && pl < 0 {
+					candidates[lastCover].trade.HasShortLossLot = true
 				}
 			}
 			continue
 		}
 		if strings.HasPrefix(level, "Total") || strings.HasPrefix(level, "SubTotal") || level == "Lot" {
 			lastSale = -1
+			lastCover = -1
 			continue
 		}
 		if level != "Order" && level != "Trade" {
@@ -274,8 +365,11 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 		levels[key][level] = append(levels[key][level], trade)
 		candidates = append(candidates, candidate{trade, level})
 		lastSale = -1
-		if trade.IsSale {
+		lastCover = -1
+		if isClosingSale(trade) {
 			lastSale = len(candidates) - 1
+		} else if isShortCover(trade) {
+			lastCover = len(candidates) - 1
 		}
 		if _, ok := fields["Code"]; !ok {
 			report.Warnings = append(report.Warnings, "Trade codes are absent; broker wash-sale flags are unavailable")
@@ -292,12 +386,78 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 			return nil, fmt.Errorf("order and execution detail totals disagree; export one consistent trade detail level")
 		}
 	}
+	// When order rows replace executions, closed lots that followed the
+	// executions move to the order. Several same-day orders make that ambiguous.
+	droppedLots := make(map[string][]ClosedLot)
+	droppedInvalid := make(map[string]bool)
+	droppedLossLot := make(map[string]bool)
+	keptSales := make(map[string]int)
+	keptHasLoss := make(map[string]bool)
+	droppedShortLossLot := make(map[string]bool)
+	keptCovers := make(map[string]int)
+	keptHasShortLoss := make(map[string]bool)
+	for _, c := range candidates {
+		dropped := c.level == "Trade" && len(levels[tradeInventoryKey(c.trade)]["Order"]) > 0
+		if isClosingSale(c.trade) {
+			key := lossLotKey(c.trade)
+			if dropped {
+				droppedLots[key] = append(droppedLots[key], c.trade.ClosedLots...)
+				droppedInvalid[key] = droppedInvalid[key] || c.trade.closedLotsInvalid
+				droppedLossLot[key] = droppedLossLot[key] || c.trade.HasLossLot
+				continue
+			}
+			keptSales[key]++
+			if c.trade.IsLossSale() {
+				keptHasLoss[key] = true
+			}
+		} else if isShortCover(c.trade) {
+			key := lossLotKey(c.trade)
+			if dropped {
+				droppedShortLossLot[key] = droppedShortLossLot[key] || c.trade.HasShortLossLot
+				continue
+			}
+			keptCovers[key]++
+			if c.trade.IsShortCoverLoss() {
+				keptHasShortLoss[key] = true
+			}
+		}
+	}
+	droppedLossAssigned := make(map[string]bool)
+	droppedShortLossAssigned := make(map[string]bool)
 	for _, c := range candidates {
 		if c.level == "Trade" && len(levels[tradeInventoryKey(c.trade)]["Order"]) > 0 {
 			continue
 		}
-		if c.trade.IsSale && lossLotSales[lossLotKey(c.trade)] {
-			c.trade.HasLossLot = true
+		if isClosingSale(c.trade) {
+			key := lossLotKey(c.trade)
+			if len(droppedLots[key]) > 0 || droppedInvalid[key] {
+				if keptSales[key] == 1 && len(c.trade.ClosedLots) == 0 {
+					c.trade.ClosedLots = droppedLots[key]
+					c.trade.closedLotsInvalid = c.trade.closedLotsInvalid || droppedInvalid[key]
+				} else {
+					c.trade.closedLotsInvalid = true
+				}
+			}
+			if droppedLossLot[key] {
+				if keptSales[key] == 1 {
+					c.trade.HasLossLot = true
+				} else if !keptHasLoss[key] && !droppedLossAssigned[key] {
+					// Several net-profitable same-day orders share dropped execution lots;
+					// mark one so the day's loss-sale window is not silently lost.
+					c.trade.HasLossLot = true
+					droppedLossAssigned[key] = true
+				}
+			}
+		} else if isShortCover(c.trade) {
+			key := lossLotKey(c.trade)
+			if droppedShortLossLot[key] {
+				if keptCovers[key] == 1 {
+					c.trade.HasShortLossLot = true
+				} else if !keptHasShortLoss[key] && !droppedShortLossAssigned[key] {
+					c.trade.HasShortLossLot = true
+					droppedShortLossAssigned[key] = true
+				}
+			}
 		}
 		report.Trades = append(report.Trades, c.trade)
 	}
@@ -328,6 +488,13 @@ func ParseActivityReportReader(r io.Reader) (*ActivityReport, error) {
 	} else {
 		report.Today = time.Now()
 	}
+	if !report.PeriodStart.IsZero() && !report.PeriodEnd.IsZero() {
+		report.Coverage = []DateRange{{report.PeriodStart, report.PeriodEnd}}
+	}
+	report.Sources = []StatementSource{{
+		Period: report.Period, Start: report.PeriodStart, End: report.PeriodEnd, Generated: report.StatementDate,
+		Trades: len(report.Trades), TradesUsed: len(report.Trades),
+	}}
 
 	return report, nil
 }
@@ -457,6 +624,16 @@ func lossLotKey(t Trade) string {
 	return tradeInventoryKey(t) + "\x00" + t.DateTime.Format(time.DateOnly)
 }
 
+// isClosingSale reports a sale that can close a long lot (not a pure short opening).
+func isClosingSale(t Trade) bool {
+	return t.IsSale && (!t.HasCode("O") || t.HasCode("C"))
+}
+
+// isShortCover reports a buy that closes a short position.
+func isShortCover(t Trade) bool {
+	return t.IsBuy && t.HasCode("C")
+}
+
 // Compare per-day buy/sell totals so partial execution detail cannot silently
 // replace or duplicate a different set of orders. Broker rounding is tolerated.
 func equivalentTradeLevels(a, b []Trade) bool {
@@ -494,6 +671,71 @@ func equivalentTradeLevels(a, b []Trade) bool {
 	return true
 }
 
+type statementZoneSpec struct {
+	offset int    // fixed UTC offset in seconds for the abbreviation
+	iana   string // DST-aware IANA timezone name for converting wall-clock time.Now()
+}
+
+var statementZones = map[string]statementZoneSpec{
+	"UTC":  {0, "UTC"},
+	"GMT":  {0, "UTC"},
+	"EST":  {-5 * 3600, "America/New_York"},
+	"EDT":  {-4 * 3600, "America/New_York"},
+	"CST":  {-6 * 3600, "America/Chicago"},
+	"CDT":  {-5 * 3600, "America/Chicago"},
+	"MST":  {-7 * 3600, "America/Denver"},
+	"MDT":  {-6 * 3600, "America/Denver"},
+	"PST":  {-8 * 3600, "America/Los_Angeles"},
+	"PDT":  {-7 * 3600, "America/Los_Angeles"},
+	"AKST": {-9 * 3600, "America/Anchorage"},
+	"AKDT": {-8 * 3600, "America/Anchorage"},
+	"HST":  {-10 * 3600, "Pacific/Honolulu"},
+	"WET":  {0, "Europe/London"},
+	"WEST": {1 * 3600, "Europe/London"},
+	"BST":  {1 * 3600, "Europe/London"},
+	"CET":  {1 * 3600, "Europe/Berlin"},
+	"CEST": {2 * 3600, "Europe/Berlin"},
+	"EET":  {2 * 3600, "Europe/Athens"},
+	"EEST": {3 * 3600, "Europe/Athens"},
+	"JST":  {9 * 3600, "Asia/Tokyo"},
+	"HKT":  {8 * 3600, "Asia/Hong_Kong"},
+	"SGT":  {8 * 3600, "Asia/Singapore"},
+	"AEST": {10 * 3600, "Australia/Sydney"},
+	"AEDT": {11 * 3600, "Australia/Sydney"},
+	"NZST": {12 * 3600, "Pacific/Auckland"},
+	"NZDT": {13 * 3600, "Pacific/Auckland"},
+}
+
+// parseStatementDate parses IBKR's WhenGenerated timestamp, resolving known
+// timezone abbreviations to their actual UTC offsets rather than Go's zero-offset
+// placeholder, and returns a location for converting current wall-clock times.
+func parseStatementDate(value string) (time.Time, *time.Location, error) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{"2006-01-02, 15:04:05 -0700", "2006-01-02, 15:04:05 Z07:00"} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, t.Location(), nil
+		}
+	}
+	t, err := time.Parse("2006-01-02, 15:04:05 MST", value)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+	zoneName, offset := t.Zone()
+	if spec, ok := statementZones[zoneName]; ok {
+		fixed := time.FixedZone(zoneName, spec.offset)
+		parsed := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), fixed)
+		loc, loadErr := time.LoadLocation(spec.iana)
+		if loadErr != nil {
+			loc = fixed
+		}
+		return parsed, loc, nil
+	}
+	if offset != 0 {
+		return t, t.Location(), nil
+	}
+	return t, nil, nil
+}
+
 func parseTradeDateTime(value string) (time.Time, error) {
 	value = strings.TrimSpace(value)
 
@@ -510,19 +752,20 @@ func parseTradeDateTime(value string) (time.Time, error) {
 }
 
 func parseChangeInNAV(records [][]string) ChangeInNAV {
-	nav := ChangeInNAV{
-		Fields: make(map[string]float64),
-	}
-
+	fields := make(map[string]float64)
 	for _, record := range records {
 		if len(record) < 4 || record[0] != "Change in NAV" || record[1] != "Data" {
 			continue
 		}
+		fields[strings.TrimSpace(record[2])] = parseFloat(record[3])
+	}
+	return changeInNAVFromFields(fields)
+}
 
-		field := strings.TrimSpace(record[2])
-		value := parseFloat(record[3])
-		nav.Fields[field] = value
-
+// changeInNAVFromFields fills the named NAV lines from IBKR's field names.
+func changeInNAVFromFields(fields map[string]float64) ChangeInNAV {
+	nav := ChangeInNAV{Fields: fields}
+	for field, value := range fields {
 		switch field {
 		case "Starting Value":
 			nav.StartingValue = value
